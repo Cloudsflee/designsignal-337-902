@@ -70,13 +70,23 @@ test('cached route serves only hash-addressed verified assets', async () => {
 
 test('Codex TOML provider loads with environment precedence and redaction-safe errors', async () => {
   const dir = await mkdtemp(path.join(os.tmpdir(), 'ds-codex-')), file = path.join(dir, 'config.toml');
-  const auth = ['fixture', 'bearer', 'value'].join('-');
+  const fixtureToml = await readFile(path.join(import.meta.dirname, '../fixtures/codex-config.toml'), 'utf8');
+  const [providerFixture, ignoredFixture] = fixtureToml.split('\n[ui]\n');
   const authSetting = ['experimental', 'bearer', 'token'].join('_');
-  const providerToml = [`model = "codex-model"`, `model_provider = "private_provider"`, `[model_providers.private_provider]`, `base_url = "https://models.example.com/v1"`, `wire_api = "responses"`, `${authSetting} = "${auth}"`, ''].join('\n');
+  const auth = ['harmless', 'runtime', 'fixture', 'value'].join('-');
+  const providerToml = [providerFixture, `${authSetting} = ${JSON.stringify(auth)}`, '[ui]', ignoredFixture].join('\n');
+  assert.ok(ignoredFixture);
   await writeFile(file, providerToml);
-  const parsed = parseCodexToml(await readFile(file, 'utf8')); assert.equal(parsed.providers.private_provider.wire_api, 'responses');
+  const parsed = parseCodexToml(await readFile(file, 'utf8'));
+  assert.deepEqual(parsed, {
+    model: 'fixture-codex-model',
+    model_provider: 'fixture_responses',
+    providers: { fixture_responses: { base_url: 'https://fixture-models.example/v1', wire_api: 'responses', experimental_bearer_token: auth } }
+  });
   const fromCodex = await loadConfig({ env: { CODEX_CONFIG_FILE: file, DESIGNSIGNAL_DATA_DIR: path.join(dir, 'data') } });
-  assert.equal(fromCodex.model.model, 'codex-model'); assert.equal(fromCodex.model.token, auth); assert.equal(fromCodex.model.baseUrl, 'https://models.example.com/v1');
+  assert.equal(fromCodex.model.model, 'fixture-codex-model'); assert.equal(fromCodex.model.token, auth); assert.equal(fromCodex.model.baseUrl, 'https://fixture-models.example/v1');
+  assert.ok(!JSON.stringify(fromCodex).includes('ignored-ui.example'));
+  assert.ok(!JSON.stringify(fromCodex).includes('ignored-hook-marker'));
   const fromHome = await loadConfig({ env: { CODEX_HOME: dir, DESIGNSIGNAL_DATA_DIR: path.join(dir, 'data') } }); assert.equal(fromHome.model.token, auth);
   const envCredential = ['env', 'fixture'].join('-');
   const fromEnv = await loadConfig({ env: { CODEX_CONFIG_FILE: file, OPENAI_MODEL: 'env-model', OPENAI_API_KEY: envCredential, OPENAI_BASE_URL: 'https://env.example/v1', DESIGNSIGNAL_DATA_DIR: path.join(dir, 'data') } });
@@ -86,6 +96,13 @@ test('Codex TOML provider loads with environment precedence and redaction-safe e
   const credentialedBaseUrl = ['https://name', urlPassword, '@models.example/v1'].join(':');
   await assert.rejects(() => loadConfig({ env: { OPENAI_BASE_URL: credentialedBaseUrl } }), error => error.message === 'invalid model base URL' && !error.message.includes(urlPassword));
   assert.throws(() => parseCodexToml('model = "one"\nmodel = "two"'), /duplicate/);
+  const malformedCredential = ['malformed', 'credential', 'fixture'].join('-');
+  for (const malformed of [
+    'model_provider = "p"\n[model_providers.p]\nbase_url = true',
+    'model_provider = "p"\n[model_providers.p]\nwire_api =',
+    `model_provider = "p"\n[model_providers.p]\n${authSetting} = "${malformedCredential}`,
+    'model_provider = "p"\n[model_providers.p]\nwire_api = "responses"\nwire_api = "chat"'
+  ]) assert.throws(() => parseCodexToml(malformed), error => /invalid|duplicate/.test(error.message) && !error.message.includes(malformedCredential));
   await rm(dir, { recursive: true, force: true });
 });
 

@@ -27,29 +27,44 @@ const tomlString = (value, lineNumber) => {
   throw new Error(`invalid Codex TOML string at line ${lineNumber}`);
 };
 
+const consumedTomlAssignment = (sourceLine, keys, lineNumber) => {
+  const leading = sourceLine.trimStart();
+  const key = keys.find(candidate => new RegExp(`^${candidate}(?=\\s|=|$)`).test(leading));
+  if (!key) return undefined;
+  const line = stripTomlComment(sourceLine).trim();
+  const assignment = line.match(/^([A-Za-z0-9_-]+)\s*=\s*(.*)$/);
+  if (!assignment || assignment[1] !== key || !assignment[2].trim()) throw new Error(`invalid Codex TOML syntax at line ${lineNumber}`);
+  return [key, assignment[2]];
+};
+
 export function parseCodexToml(input) {
   const result = { providers: {} };
   const seen = new Set();
   let section = 'top';
   for (const [index, sourceLine] of String(input).split(/\r?\n/).entries()) {
     const lineNumber = index + 1;
-    const line = stripTomlComment(sourceLine).trim();
-    if (!line) continue;
-    const table = line.match(/^\[([^\]]+)\]$/);
-    if (table) {
-      const provider = table[1].match(/^model_providers\.([A-Za-z0-9_-]+)$/);
-      section = provider ? `provider:${provider[1]}` : 'ignored';
-      if (provider) result.providers[provider[1]] ||= {};
+    const leading = sourceLine.trimStart();
+    if (!leading || leading.startsWith('#')) continue;
+    if (leading.startsWith('[')) {
+      const provider = sourceLine.match(/^\s*\[\s*model_providers\s*\.\s*([A-Za-z0-9_-]+)\s*\]\s*(?:#.*)?$/);
+      const selected = provider?.[1] === result.model_provider;
+      section = selected ? `provider:${provider[1]}` : 'ignored';
+      if (selected) result.providers[provider[1]] ||= {};
       continue;
     }
-    const assignment = line.match(/^([A-Za-z0-9_-]+)\s*=\s*(.+)$/);
-    if (!assignment) throw new Error(`invalid Codex TOML syntax at line ${lineNumber}`);
-    const [, key, rawValue] = assignment;
-    if (section === 'top' && ['model', 'model_provider'].includes(key)) {
+    const keys = section === 'top'
+      ? ['model', 'model_provider']
+      : section.startsWith('provider:')
+        ? ['base_url', 'wire_api', 'experimental_bearer_token']
+        : [];
+    const assignment = consumedTomlAssignment(sourceLine, keys, lineNumber);
+    if (!assignment) continue;
+    const [key, rawValue] = assignment;
+    if (section === 'top') {
       if (seen.has(`top:${key}`)) throw new Error(`duplicate Codex TOML key at line ${lineNumber}`);
       seen.add(`top:${key}`); result[key] = tomlString(rawValue, lineNumber);
     }
-    if (section.startsWith('provider:') && ['base_url', 'wire_api', 'experimental_bearer_token'].includes(key)) {
+    if (section.startsWith('provider:')) {
       const target = `${section}:${key}`;
       if (seen.has(target)) throw new Error(`duplicate Codex TOML key at line ${lineNumber}`);
       seen.add(target); result.providers[section.slice(9)][key] = tomlString(rawValue, lineNumber);
