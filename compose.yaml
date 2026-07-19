@@ -1,0 +1,39 @@
+services:
+  dashboard:
+    build: .
+    restart: unless-stopped
+    read_only: true
+    tmpfs: [/tmp]
+    environment:
+      DESIGNSIGNAL_DATA_DIR: /data
+      DESIGNSIGNAL_HOST: 0.0.0.0
+      DESIGNSIGNAL_PORT: 3379
+    volumes:
+      - designsignal-data:/data
+      - ./config:/app/config:ro
+    ports: ["3379:3379"]
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3379/healthz').then(r=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+  scheduler:
+    build: .
+    restart: unless-stopped
+    read_only: true
+    tmpfs: [/tmp]
+    command: ["node", "src/cli.mjs", "schedule"]
+    environment:
+      DESIGNSIGNAL_DATA_DIR: /data
+      DESIGNSIGNAL_TIMEZONE: Asia/Shanghai
+      OPENAI_BASE_URL: ${OPENAI_BASE_URL:-https://api.openai.com/v1}
+      OPENAI_MODEL: ${OPENAI_MODEL:-}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      DESIGNSIGNAL_WEBHOOK_URL: ${DESIGNSIGNAL_WEBHOOK_URL:-}
+      FEISHU_WEBHOOK_URL: ${FEISHU_WEBHOOK_URL:-}
+      WECOM_WEBHOOK_URL: ${WECOM_WEBHOOK_URL:-}
+    volumes:
+      - designsignal-data:/data
+      - ./config:/app/config:ro
+volumes:
+  designsignal-data:

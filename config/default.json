@@ -1,0 +1,42 @@
+{
+  "timezone": "Asia/Shanghai",
+  "schedule": "23:50",
+  "network": {
+    "timeoutMs": 12000,
+    "retries": 2,
+    "maxJsonBytes": 2097152,
+    "maxFeedBytes": 2097152,
+    "maxPageBytes": 1048576,
+    "maxPdfBytes": 15728640,
+    "maxImageBytes": 5242880,
+    "allowHosts": [
+      "api.openalex.org", "export.arxiv.org", "arxiv.org", "openalex.org",
+      "www.idi.zju.edu.cn", "idi.zju.edu.cn", "www.tsinghua.edu.cn", "www.zju.edu.cn",
+      "www.tongji.edu.cn", "news.mit.edu", "hci.stanford.edu", "www.cs.cmu.edu",
+      "www.core77.com", "www.dezeen.com", "www.designboom.com", "www.yankodesign.com",
+      "www.awwwards.com", "www.producthunt.com", "openai.com", "deepmind.google",
+      "www.microsoft.com", "huggingface.co", "rsshub.app"
+    ]
+  },
+  "sources": [
+    { "id": "openalex-design", "adapter": "openalex", "url": "https://api.openalex.org/works?filter=from_publication_date:{{since}},concepts.id:C107457646&sort=publication_date:desc&per-page=25", "locale": "en", "category": "paper" },
+    { "id": "arxiv-hci-ai", "adapter": "arxiv", "url": "https://export.arxiv.org/api/query?search_query=cat:cs.HC+OR+cat:cs.AI&sortBy=submittedDate&sortOrder=descending&max_results=25", "locale": "en", "category": "paper" },
+    { "id": "zju-idi", "adapter": "page", "url": "http://www.idi.zju.edu.cn/", "locale": "zh", "category": "frontier" },
+    { "id": "tsinghua-design", "adapter": "page", "url": "https://www.tsinghua.edu.cn/", "locale": "zh", "category": "frontier" },
+    { "id": "zhejiang-university", "adapter": "page", "url": "https://www.zju.edu.cn/", "locale": "zh", "category": "frontier" },
+    { "id": "tongji-design", "adapter": "page", "url": "https://www.tongji.edu.cn/", "locale": "zh", "category": "frontier" },
+    { "id": "mit-hci-news", "adapter": "page", "url": "https://news.mit.edu/", "locale": "en", "category": "frontier" },
+    { "id": "stanford-hci", "adapter": "page", "url": "https://hci.stanford.edu/", "locale": "en", "category": "frontier" },
+    { "id": "cmu-hci", "adapter": "page", "url": "https://www.cs.cmu.edu/", "locale": "en", "category": "frontier" },
+    { "id": "core77", "adapter": "feed", "url": "https://www.core77.com/rss", "locale": "en", "category": "product" },
+    { "id": "dezeen", "adapter": "feed", "url": "https://www.dezeen.com/feed/", "locale": "en", "category": "ui" },
+    { "id": "designboom", "adapter": "feed", "url": "https://www.designboom.com/feed/", "locale": "en", "category": "product" },
+    { "id": "yanko", "adapter": "feed", "url": "https://www.yankodesign.com/feed/", "locale": "en", "category": "product" },
+    { "id": "awwwards", "adapter": "feed", "url": "https://www.awwwards.com/blog/feed/", "locale": "en", "category": "ui" },
+    { "id": "producthunt", "adapter": "feed", "url": "https://www.producthunt.com/feed", "locale": "en", "category": "ui" },
+    { "id": "openai-news", "adapter": "feed", "url": "https://openai.com/news/rss.xml", "locale": "en", "category": "frontier" },
+    { "id": "deepmind", "adapter": "feed", "url": "https://deepmind.google/blog/rss.xml", "locale": "en", "category": "frontier" },
+    { "id": "msr", "adapter": "feed", "url": "https://www.microsoft.com/en-us/research/feed/", "locale": "en", "category": "frontier" },
+    { "id": "huggingface", "adapter": "feed", "url": "https://huggingface.co/blog/feed.xml", "locale": "en", "category": "frontier" }
+  ]
+}
