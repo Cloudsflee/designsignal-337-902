@@ -87,7 +87,8 @@ export async function loadConfig({ configPath, env = process.env } = {}) {
       model: env.OPENAI_MODEL || explicit.model?.model || codex.model || '',
       token: env.OPENAI_API_KEY || explicit.model?.token || codexProvider.experimental_bearer_token || '',
       provider: env.OPENAI_BASE_URL || env.OPENAI_MODEL || env.OPENAI_API_KEY ? 'openai-env' : explicit.model ? 'designsignal-config' : codex.model_provider || 'openai',
-      wireApi: env.OPENAI_BASE_URL || env.OPENAI_MODEL || env.OPENAI_API_KEY ? 'responses' : explicit.model?.wireApi || codexProvider.wire_api || 'responses'
+      wireApi: env.OPENAI_BASE_URL || env.OPENAI_MODEL || env.OPENAI_API_KEY ? 'responses' : explicit.model?.wireApi || codexProvider.wire_api || 'responses',
+      maxOutputTokens: Number(env.DESIGNSIGNAL_MODEL_MAX_OUTPUT_TOKENS || explicit.model?.maxOutputTokens || defaults.model?.maxOutputTokens || 6000)
     },
     openAlex: {
       apiKey: env.OPENALEX_API_KEY || '',
@@ -97,6 +98,14 @@ export async function loadConfig({ configPath, env = process.env } = {}) {
       generic: env.DESIGNSIGNAL_WEBHOOK_URL || explicit.push?.generic || '',
       feishu: env.FEISHU_WEBHOOK_URL || explicit.push?.feishu || '',
       wecom: env.WECOM_WEBHOOK_URL || explicit.push?.wecom || ''
+    },
+    study: {
+      profileFile: env.DESIGNSIGNAL_STUDY_PROFILE_FILE ? path.resolve(env.DESIGNSIGNAL_STUDY_PROFILE_FILE) : explicit.study?.profileFile ? path.resolve(explicit.study.profileFile) : '',
+      profileMaxBytes: Number(explicit.study?.profileMaxBytes || defaults.study?.profileMaxBytes || 16384),
+      feedbackMaxBytes: Number(explicit.study?.feedbackMaxBytes || defaults.study?.feedbackMaxBytes || 65536),
+      recentFeedbackCount: Number(explicit.study?.recentFeedbackCount || defaults.study?.recentFeedbackCount || 14),
+      maxDirections: Number(explicit.study?.maxDirections || defaults.study?.maxDirections || 12),
+      maxWeaknesses: Number(explicit.study?.maxWeaknesses || defaults.study?.maxWeaknesses || 12)
     }
   };
   const optionalFeeds = [
@@ -109,6 +118,10 @@ export async function loadConfig({ configPath, env = process.env } = {}) {
     const modelUrl = new URL(config.model.baseUrl);
     if (!['http:', 'https:'].includes(modelUrl.protocol) || modelUrl.username || modelUrl.password) throw new Error();
   } catch { throw new Error('invalid model base URL'); }
+  if (!Number.isInteger(config.model.maxOutputTokens) || config.model.maxOutputTokens < 256 || config.model.maxOutputTokens > 32768) throw new Error('model max output tokens must be an integer from 256 to 32768');
+  for (const [key, min, max] of [['profileMaxBytes', 1024, 1048576], ['feedbackMaxBytes', 1024, 1048576], ['recentFeedbackCount', 1, 100], ['maxDirections', 1, 50], ['maxWeaknesses', 1, 50]]) {
+    if (!Number.isInteger(config.study[key]) || config.study[key] < min || config.study[key] > max) throw new Error(`invalid study.${key}`);
+  }
   return config;
 }
 export { ROOT };

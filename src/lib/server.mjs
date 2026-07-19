@@ -1,10 +1,11 @@
 import { createServer } from 'node:http';
-import { appendFile, lstat, readFile, readdir } from 'node:fs/promises';
+import { lstat, readFile, readdir } from 'node:fs/promises';
 import path from 'node:path';
 import { latestReport } from './storage.mjs';
 import { renderHtml } from './render.mjs';
 import { json, sha256 } from './util.mjs';
 import { loadExamEvidence } from './evidence.mjs';
+import { appendFeedback, validateFeedback } from './study.mjs';
 
 const APP_JS = `document.querySelectorAll('[data-filter]').forEach(b=>b.onclick=()=>{document.querySelectorAll('[data-filter]').forEach(x=>x.setAttribute('aria-pressed',String(x===b)));document.querySelectorAll('.signal').forEach(x=>x.classList.toggle('hidden',b.dataset.filter!=='all'&&x.dataset.category!==b.dataset.filter))})`;
 const headers = {
@@ -50,8 +51,15 @@ export async function handleDashboardRequest(config, req, res) {
       if (req.method === 'GET' && url.pathname === '/api/source-health') { const report = await latestReport(config.dataDir); return json(res, report ? 200 : 404, report?.audit.sourceHealth || { error: 'no report' }); }
       if (req.method === 'GET' && url.pathname === '/api/outbox') { let files = []; try { files = await readdir(path.join(config.dataDir, 'outbox')); } catch {} const jobs = await Promise.all(files.filter(x => x.endsWith('.json')).map(x => readFile(path.join(config.dataDir, 'outbox', x), 'utf8').then(JSON.parse))); return json(res, 200, jobs.map(({ payload, ...job }) => job)); }
       if (req.method === 'POST' && url.pathname === '/api/feedback') {
-        const raw = await body(req); const note = new URLSearchParams(raw).get('note')?.trim(); if (!note) return json(res, 400, { error: 'note required' });
-        await appendFile(path.join(config.dataDir, 'feedback.ndjson'), `${JSON.stringify({ at: new Date().toISOString(), note: note.slice(0, 2000) })}\n`, { mode: 0o600, flag: 'a' });
+        const raw = await body(req, 8192);
+        let input;
+        try {
+          if (String(req.headers?.['content-type'] || '').toLowerCase().startsWith('application/json')) input = JSON.parse(raw);
+          else input = Object.fromEntries(new URLSearchParams(raw));
+          input = validateFeedback(input, new Date(), config.timezone || 'UTC');
+        } catch (error) { return json(res, 400, { error: error.message }); }
+        try { await appendFeedback(config, input); }
+        catch { throw new Error('feedback storage failed'); }
         res.writeHead(303, { location: '/' }); return res.end();
       }
       if (req.method === 'GET' && url.pathname === '/') { const report = await latestReport(config.dataDir); if (!report) { res.writeHead(503, { 'content-type': 'text/plain; charset=utf-8' }); return res.end('No report yet. Run daily first.'); } const html = renderHtml(report); res.writeHead(200, { 'content-type': 'text/html; charset=utf-8', 'content-length': Buffer.byteLength(html) }); return res.end(html); }

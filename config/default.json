@@ -1,6 +1,16 @@
 {
   "timezone": "Asia/Shanghai",
   "schedule": "23:50",
+  "model": {
+    "maxOutputTokens": 6000
+  },
+  "study": {
+    "profileMaxBytes": 16384,
+    "feedbackMaxBytes": 65536,
+    "recentFeedbackCount": 14,
+    "maxDirections": 12,
+    "maxWeaknesses": 12
+  },
   "network": {
     "timeoutMs": 12000,
     "retries": 2,
