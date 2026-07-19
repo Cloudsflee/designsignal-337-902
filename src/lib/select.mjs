@@ -14,6 +14,7 @@ export function selectDaily(candidates, { date, history = [], maxAgeDays = 60 } 
     else if (!sourceUrl) reason = 'invalid-source-url';
     else if (recent.has(item.id) || recent.has(sourceUrl)) reason = 'dedupe-60-day';
     else if (!Number.isFinite(new Date(item.publishedAt).getTime()) || now - new Date(item.publishedAt).getTime() > maxAgeDays * day) reason = 'stale';
+    else if (new Date(item.publishedAt).getTime() - now > day) reason = 'future-dated';
     else if (!['zh', 'en'].includes(item.source.locale)) reason = 'missing-origin-language';
     else if (['product', 'ui'].includes(item.category) && !canonical(item.image?.url || item.imageUrl || '')) reason = 'missing-image';
     if (reason) rejected.push({ id: item.id || 'unknown', sourceId: item.source?.id || 'unknown', reason });

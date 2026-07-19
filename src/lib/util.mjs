@@ -37,12 +37,12 @@ export async function withLock(lockFile, fn) {
   finally { await handle.close(); await rm(lockFile, { force: true }); }
 }
 export const redact = value => {
-  const sensitive = /(api[-_]?key|authorization|token|secret|webhook)/i;
+  const sensitive = /(api[-_]?key|authorization|token|secret|webhook|mailto)/i;
   const visit = (v, key = '') => {
     if (sensitive.test(key)) return '[REDACTED]';
     if (Array.isArray(v)) return v.map(x => visit(x));
     if (v && typeof v === 'object') return Object.fromEntries(Object.entries(v).map(([k, x]) => [k, visit(x, k)]));
-    if (typeof v === 'string') return v.replace(/Bearer\s+\S+/gi, 'Bearer [REDACTED]').replace(/sk-[A-Za-z0-9_-]{8,}/g, '[REDACTED]');
+    if (typeof v === 'string') return v.replace(/([?&](?:api_key|mailto)=)[^&\s]+/gi, '$1[REDACTED]').replace(/Bearer\s+\S+/gi, 'Bearer [REDACTED]').replace(/sk-[A-Za-z0-9_-]{8,}/g, '[REDACTED]');
     return v;
   };
   return visit(value);

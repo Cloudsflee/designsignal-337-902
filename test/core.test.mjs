@@ -57,8 +57,11 @@ test('credential redaction covers nested keys, bearer tokens and sk tokens', () 
   const fakeBearer = ['Bearer', 'fixture'].join(' ');
   const fakePrefixedToken = [['s', 'k'].join(''), 'fixturevalue'].join('-');
   const fakeWebhook = new URL('/fixture', 'https://example.com').href;
-  const value = redact({ apiKey: fakeApiKey, nested: { note: ['Authorization', fakeBearer, 'and', fakePrefixedToken].join(' ') }, webhook: fakeWebhook });
+  const fakeMailto = ['redaction', 'example.test'].join('@');
+  const encodedMailto = encodeURIComponent(fakeMailto);
+  const fakeOpenAlexUrl = `https://api.openalex.org/works?api_key=${fakeApiKey}&mailto=${encodedMailto}&filter=x`;
+  const value = redact({ apiKey: fakeApiKey, nested: { note: ['Authorization', fakeBearer, 'and', fakePrefixedToken, fakeOpenAlexUrl].join(' ') }, webhook: fakeWebhook, mailto: fakeMailto });
   assert.equal(value.apiKey, '[REDACTED]'); assert.equal(value.webhook, '[REDACTED]');
   const serialized = JSON.stringify(value);
-  for (const fixture of [fakeApiKey, 'fixture', fakePrefixedToken, fakeWebhook]) assert.ok(!serialized.includes(fixture));
+  for (const fixture of [fakeApiKey, 'fixture', fakePrefixedToken, fakeWebhook, fakeMailto, encodedMailto]) assert.ok(!serialized.includes(fixture));
 });

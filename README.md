@@ -11,7 +11,7 @@ node src/cli.mjs daily
 node src/cli.mjs serve
 ```
 
-Open `http://127.0.0.1:3379`. The five primary commands are `collect`, `daily`, `serve`, `doctor`, and `schedule`. `node src/cli.mjs push retry` retries the durable delivery outbox. Use `--config /absolute/path/config.json` for an explicit private DesignSignal config. Model settings can also come from `CODEX_CONFIG_FILE`, falling back to `$CODEX_HOME/config.toml`; the selected top-level `model`/`model_provider` and provider `base_url`, `wire_api`, and `experimental_bearer_token` are read with `OPENAI_*` taking precedence. Values remain in process memory and credentials are never written to reports, caches, logs, or outbox jobs.
+Open `http://127.0.0.1:3379`. The five primary commands are `collect`, `daily`, `serve`, `doctor`, and `schedule`. `node src/cli.mjs push retry` retries the durable delivery outbox. Use `--config /absolute/path/config.json` for an explicit private DesignSignal config. Model settings can also come from `CODEX_CONFIG_FILE`, falling back to `$CODEX_HOME/config.toml`; the selected top-level `model`/`model_provider` and provider `base_url`, `wire_api`, and `experimental_bearer_token` are read with `OPENAI_*` taking precedence. `OPENALEX_API_KEY` and `OPENALEX_MAILTO` are read only from the process environment and appended to OpenAlex requests at request time. Values remain in process memory and credentials are never written to reports, caches, health records, logs, or outbox jobs.
 
 Live bilingual enrichment requires an OpenAI-compatible Responses API:
 

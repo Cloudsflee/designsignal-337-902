@@ -89,6 +89,10 @@ export async function loadConfig({ configPath, env = process.env } = {}) {
       provider: env.OPENAI_BASE_URL || env.OPENAI_MODEL || env.OPENAI_API_KEY ? 'openai-env' : explicit.model ? 'designsignal-config' : codex.model_provider || 'openai',
       wireApi: env.OPENAI_BASE_URL || env.OPENAI_MODEL || env.OPENAI_API_KEY ? 'responses' : explicit.model?.wireApi || codexProvider.wire_api || 'responses'
     },
+    openAlex: {
+      apiKey: env.OPENALEX_API_KEY || '',
+      mailto: env.OPENALEX_MAILTO || ''
+    },
     push: {
       generic: env.DESIGNSIGNAL_WEBHOOK_URL || explicit.push?.generic || '',
       feishu: env.FEISHU_WEBHOOK_URL || explicit.push?.feishu || '',

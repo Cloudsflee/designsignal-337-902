@@ -36,7 +36,7 @@ export async function enrichItem(raw, config, ctx = {}) {
       item.id = raw.id; item.category = raw.category; item.source = raw.source; item.publishedAt = raw.publishedAt;
       item.citations = [{ label: 'Primary source', url: raw.source.url }];
       item.exam = { '337': (item.exam?.['337'] || []).filter(x => allowed337.has(x)), '902': (item.exam?.['902'] || []).filter(x => allowed902.has(x)) };
-      if (raw.imageUrl) item.image = { url: raw.imageUrl, mime: 'image/unknown', hash: 'remote-unfetched', author: raw.authors?.join(', ') || raw.source.name, institution: raw.institution || raw.source.name, accessStatus: 'remote-link', licenseStatus: raw.rights?.licenseStatus || 'unknown' };
+      if (raw.imageUrl) item.image = { url: raw.imageUrl, remoteUrl: raw.imageUrl, mime: 'image/unknown', hash: 'remote-unfetched', author: raw.authors?.join(', ') || raw.source.name, institution: raw.institution || raw.source.name, accessStatus: 'remote-link', licenseStatus: raw.rights?.licenseStatus || 'unknown' };
       item.rights = raw.rights; item.retrievedAt = new Date().toISOString();
       return validateItem(item);
     } catch (error) { last = error; }

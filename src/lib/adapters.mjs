@@ -12,29 +12,69 @@ const imageFrom = xml => xml.match(/<(?:media:content|media:thumbnail)[^>]+url=[
 const idFor = (source, url) => `${source.id}-${sha256(url).slice(0, 16)}`;
 const publicUrl = (value, base) => { if (typeof value !== 'string' || !value.trim()) return ''; try { const url = new URL(value, base); return ['http:', 'https:'].includes(url.protocol) && !url.username && !url.password ? url.href : ''; } catch { return ''; } };
 
+const normalizedLanguage = value => {
+  const language = String(value || '').trim().toLowerCase().split(/[-_]/)[0];
+  if (['zh', 'zho', 'chi', 'chinese'].includes(language)) return 'zh';
+  if (['en', 'eng', 'english'].includes(language)) return 'en';
+  return '';
+};
+
+export function candidateLanguage({ declared, title = '', summary = '', configuredLocale = '', allowConfiguredFallback = false } = {}) {
+  const explicit = normalizedLanguage(declared);
+  if (explicit) return { locale: explicit, provenance: { method: 'declared', value: explicit } };
+  if (String(declared || '').trim()) return { locale: 'unknown', provenance: { method: 'declared-unsupported', value: String(declared).trim().toLowerCase() } };
+  const sample = `${title} ${summary}`.replace(/<[^>]+>/g, ' ');
+  const han = (sample.match(/[\u3400-\u9fff]/g) || []).length;
+  const latin = (sample.match(/[A-Za-z]/g) || []).length;
+  if (han >= 4 && han * 2 >= latin) return { locale: 'zh', provenance: { method: 'inferred-script', script: 'Han' } };
+  if (latin >= 8 && han === 0) return { locale: 'en', provenance: { method: 'inferred-script', script: 'Latin' } };
+  const fallback = allowConfiguredFallback ? normalizedLanguage(configuredLocale) : '';
+  if (fallback) return { locale: fallback, provenance: { method: 'configured-locale-fallback', configuredLocale: fallback } };
+  return { locale: 'unknown', provenance: { method: 'unknown' } };
+}
+
 function raw(source, values) {
   const retrievedAt = new Date().toISOString();
+  const { locale = source.locale || 'unknown', languageProvenance = { method: 'configured-locale', configuredLocale: source.locale || 'unknown' }, ...candidate } = values;
   return {
-    id: idFor(source, values.url), category: source.category,
-    source: { id: source.id, name: source.name || source.id, url: values.url, locale: source.locale, credibility: ['openalex', 'arxiv'].includes(source.adapter) ? 'scholarly-index-or-repository' : ['page', 'listing'].includes(source.adapter) ? 'institutional-page' : 'editorial-feed' }, ...values,
+    id: idFor(source, candidate.url), category: source.category,
+    source: { id: source.id, name: source.name || source.id, url: candidate.url, locale, languageProvenance, credibility: ['openalex', 'arxiv'].includes(source.adapter) ? 'scholarly-index-or-repository' : ['page', 'listing'].includes(source.adapter) ? 'institutional-page' : 'editorial-feed' }, ...candidate,
     retrievedAt
   };
 }
 
 export async function openAlexAdapter(source, config, ctx = {}) {
+  if (ctx.openAlexBudget && ctx.openAlexBudget.remaining <= 0) throw new Error('OpenAlex request budget exhausted');
+  if (ctx.openAlexBudget) ctx.openAlexBudget.remaining--;
   const since = new Date(Date.now() - 7 * 864e5).toISOString().slice(0, 10);
-  const url = source.url.replace('{{since}}', since);
-  const { data } = await fetchJson(url, config.network, ctx);
+  const metadataUrl = source.url.replace('{{since}}', since);
+  const requestUrl = new URL(metadataUrl);
+  if (config.openAlex?.apiKey) requestUrl.searchParams.set('api_key', config.openAlex.apiKey);
+  if (config.openAlex?.mailto) requestUrl.searchParams.set('mailto', config.openAlex.mailto);
+  let data;
+  try {
+    ({ data } = await fetchJson(requestUrl.href, config.network, ctx));
+  } catch (error) {
+    let message = String(error?.message || 'OpenAlex request failed');
+    for (const secret of [config.openAlex?.apiKey, config.openAlex?.mailto].filter(Boolean)) message = message.replaceAll(secret, '[REDACTED]').replaceAll(encodeURIComponent(secret), '[REDACTED]');
+    message = message.replace(/([?&](?:api_key|mailto)=)[^&\s]+/gi, '$1[REDACTED]');
+    if (/HTTP 429/.test(message)) throw new Error('OpenAlex HTTP 429: rate limit or request budget exhausted');
+    throw new Error(message);
+  }
   if (!Array.isArray(data.results) || data.results.length > 100) throw new Error('invalid or excessive OpenAlex result set');
-  return data.results.slice(0, 25).map(work => raw(source, {
-    url: work.primary_location?.landing_page_url || work.id,
-    title: work.title || work.display_name,
-    summary: work.abstract_inverted_index ? Object.entries(work.abstract_inverted_index).flatMap(([word, positions]) => positions.map(pos => [pos, word])).sort((a, b) => a[0] - b[0]).map(x => x[1]).join(' ').slice(0, 1500) : '',
-    publishedAt: work.publication_date, authors: (work.authorships || []).slice(0, 20).map(x => x.author?.display_name).filter(Boolean),
-    institution: work.authorships?.[0]?.institutions?.[0]?.display_name || '', doi: work.doi || '',
-    oaPdf: work.open_access?.is_oa && work.best_oa_location?.pdf_url ? work.best_oa_location.pdf_url : '',
-    rights: { access: work.open_access?.is_oa ? 'open-access' : 'metadata-only', licenseStatus: work.best_oa_location?.license || 'unknown' }
-  }));
+  return data.results.slice(0, 25).map(work => {
+    const title = work.title || work.display_name;
+    const summary = work.abstract_inverted_index ? Object.entries(work.abstract_inverted_index).flatMap(([word, positions]) => positions.map(pos => [pos, word])).sort((a, b) => a[0] - b[0]).map(x => x[1]).join(' ').slice(0, 1500) : '';
+    const language = candidateLanguage({ declared: work.language, title, summary });
+    return raw(source, {
+      url: work.primary_location?.landing_page_url || work.id, title, summary,
+      locale: language.locale, languageProvenance: language.provenance,
+      publishedAt: work.publication_date, authors: (work.authorships || []).slice(0, 20).map(x => x.author?.display_name).filter(Boolean),
+      institution: work.authorships?.[0]?.institutions?.[0]?.display_name || '', doi: work.doi || '',
+      oaPdf: work.open_access?.is_oa && work.best_oa_location?.pdf_url ? work.best_oa_location.pdf_url : '',
+      rights: { access: work.open_access?.is_oa ? 'open-access' : 'metadata-only', licenseStatus: work.best_oa_location?.license || 'unknown' }
+    });
+  });
 }
 
 export async function arxivAdapter(source, config, ctx = {}) {
@@ -42,7 +82,9 @@ export async function arxivAdapter(source, config, ctx = {}) {
   return blocks(body.toString('utf8'), 'entry').slice(0, 25).map(entry => {
     const page = tag(entry, ['id']);
     const pdf = [...entry.matchAll(/<link[^>]+href=["']([^"']+)["'][^>]*>/gi)].map(x => x[1]).find(x => /\/pdf\//.test(x)) || '';
-    return raw(source, { url: page, title: tag(entry, ['title']), summary: tag(entry, ['summary']), publishedAt: tag(entry, ['published', 'updated']), authors: blocks(entry, 'author').map(x => tag(x, ['name'])), institution: 'arXiv', oaPdf: pdf, rights: { access: 'open-access', licenseStatus: 'arXiv terms; verify article license' } });
+    const title = tag(entry, ['title']), summary = tag(entry, ['summary']);
+    const language = candidateLanguage({ title, summary, configuredLocale: source.locale, allowConfiguredFallback: true });
+    return raw(source, { url: page, title, summary, locale: language.locale, languageProvenance: language.provenance, publishedAt: tag(entry, ['published', 'updated']), authors: blocks(entry, 'author').map(x => tag(x, ['name'])), institution: 'arXiv', oaPdf: pdf, rights: { access: 'open-access', licenseStatus: 'arXiv terms; verify article license' } });
   });
 }
 
@@ -53,7 +95,9 @@ export async function feedAdapter(source, config, ctx = {}) {
   return entries.slice(0, 30).map(entry => {
     const url = publicUrl(attrLink(entry), source.url);
     if (!url) return null;
-    return raw(source, { url, title: tag(entry, ['title']), summary: tag(entry, ['description', 'summary', 'content:encoded', 'content']), publishedAt: tag(entry, ['pubDate', 'published', 'updated']), authors: [tag(entry, ['dc:creator', 'author'])].filter(Boolean), institution: source.id, imageUrl: publicUrl(imageFrom(entry), url), rights: { access: 'public-feed', licenseStatus: 'linked-only' } });
+    const title = tag(entry, ['title']), summary = tag(entry, ['description', 'summary', 'content:encoded', 'content']);
+    const language = candidateLanguage({ title, summary, configuredLocale: source.locale, allowConfiguredFallback: true });
+    return raw(source, { url, title, summary, locale: language.locale, languageProvenance: language.provenance, publishedAt: tag(entry, ['pubDate', 'published', 'updated']), authors: [tag(entry, ['dc:creator', 'author'])].filter(Boolean), institution: source.id, imageUrl: publicUrl(imageFrom(entry), url), rights: { access: 'public-feed', licenseStatus: 'linked-only' } });
   }).filter(x => x?.title);
 }
 
@@ -64,7 +108,8 @@ export async function pageAdapter(source, config, ctx = {}) {
   const description = entities(html.match(/<meta[^>]+(?:name|property)=["'](?:description|og:description)["'][^>]+content=["']([^"']+)/i)?.[1]);
   const imageUrl = publicUrl(html.match(/<meta[^>]+property=["']og:image["'][^>]+content=["']([^"']+)/i)?.[1], url);
   const publishedAt = html.match(/<meta[^>]+property=["']article:published_time["'][^>]+content=["']([^"']+)/i)?.[1] || html.match(/<time[^>]+datetime=["']([^"']+)/i)?.[1] || '';
-  return [raw(source, { url, title, summary: description, publishedAt, authors: [], institution: source.id, imageUrl, rights: { access: 'public-page', licenseStatus: 'linked-only' } })];
+  const language = candidateLanguage({ title, summary: description, configuredLocale: source.locale, allowConfiguredFallback: true });
+  return [raw(source, { url, title, summary: description, locale: language.locale, languageProvenance: language.provenance, publishedAt, authors: [], institution: source.id, imageUrl, rights: { access: 'public-page', licenseStatus: 'linked-only' } })];
 }
 
 const dated = value => {
@@ -85,13 +130,17 @@ const titleFrom = anchor => entities(anchor.match(/\btitle\s*=\s*["']([^"']+)["'
 export async function listingAdapter(source, config, ctx = {}) {
   const { body, url: listingUrl } = await safeFetch(source.url, config.network, { ...ctx, maxBytes: config.network.maxPageBytes, accept: 'text/html, application/xhtml+xml' });
   const html = body.toString('utf8');
-  const sections = [...html.matchAll(/<(?:article|li|div)\b[^>]*>([\s\S]{0,5000}?)<\/(?:article|li|div)>/gi)].map(x => x[0]);
+  const anchors = [...html.matchAll(/<a\b[^>]*>[\s\S]{0,4000}?<\/a>/gi)];
   const candidates = [];
-  for (const section of sections) {
+  for (const [index, match] of anchors.entries()) {
+    const anchor = match[0], anchorStart = match.index, anchorEnd = anchorStart + anchor.length;
+    const previousEnd = index ? anchors[index - 1].index + anchors[index - 1][0].length : 0;
+    const nextStart = anchors[index + 1]?.index ?? html.length;
+    const windowStart = Math.max(previousEnd, anchorStart - 1200);
+    const windowEnd = Math.min(nextStart, anchorEnd + 1200);
+    const section = html.slice(windowStart, windowEnd);
     const publishedAt = dated(section);
     if (!publishedAt) continue;
-    const anchor = section.match(/<a\b[^>]*>[\s\S]*?<\/a>/i)?.[0];
-    if (!anchor) continue;
     const href = hrefFrom(anchor), title = titleFrom(anchor);
     if (!href || !title || /^(?:javascript:|mailto:|#)/i.test(href)) continue;
     let articleUrl;
@@ -102,7 +151,9 @@ export async function listingAdapter(source, config, ctx = {}) {
     const imageRef = section.match(/<img\b[^>]+(?:src|data-src)=["']([^"']+)["']/i)?.[1];
     let imageUrl = '';
     try { if (imageRef) imageUrl = new URL(imageRef, listingUrl).href; } catch {}
-    candidates.push(raw(source, { url: articleUrl.href, title, summary: entities(section).slice(0, 1500), publishedAt, authors: [], institution: source.institution || source.name || source.id, imageUrl, rights: { access: 'public-page', licenseStatus: 'linked-only' } }));
+    const summary = entities(section).slice(0, 1500);
+    const language = candidateLanguage({ title, summary, configuredLocale: source.locale, allowConfiguredFallback: true });
+    candidates.push(raw(source, { url: articleUrl.href, title, summary, locale: language.locale, languageProvenance: language.provenance, publishedAt, authors: [], institution: source.institution || source.name || source.id, imageUrl, rights: { access: 'public-page', licenseStatus: 'linked-only' } }));
   }
   return [...new Map(candidates.map(x => [x.source.url, x])).values()].slice(0, 30);
 }
@@ -111,12 +162,14 @@ export const adapters = { openalex: openAlexAdapter, arxiv: arxivAdapter, feed: 
 
 export async function collectSources(config, ctx = {}) {
   const candidates = [], health = [];
+  const openAlexBudget = ctx.openAlexBudget || { remaining: config.network.openAlexRequestBudget ?? 2 };
   for (const source of config.sources) {
     const started = Date.now();
     try {
-      const items = await adapters[source.adapter](source, config, ctx);
+      const items = await adapters[source.adapter](source, config, { ...ctx, openAlexBudget });
       candidates.push(...items);
-      health.push({ sourceId: source.id, status: 'ok', count: items.length, durationMs: Date.now() - started, optional: Boolean(source.optional) });
+      const empty = items.length === 0;
+      health.push({ sourceId: source.id, status: empty ? 'empty' : 'ok', count: items.length, durationMs: Date.now() - started, optional: Boolean(source.optional), ...(empty ? { impact: source.optional ? 'optional-source-empty' : 'required-source-empty', reason: 'source returned zero dated candidates' } : {}) });
     } catch (error) {
       health.push({ sourceId: source.id, status: 'degraded', count: 0, durationMs: Date.now() - started, optional: Boolean(source.optional), impact: source.optional ? 'optional-source-degraded' : 'required-source-degraded', reason: error.message });
     }

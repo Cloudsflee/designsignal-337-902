@@ -35,6 +35,9 @@ export function attachCachedAssets(item, assets = []) {
   if (!assets.length) return item;
   item.assets = assets;
   const image = assets.find(x => x.kind === 'image');
-  if (image) item.image = { ...item.image, ...image, url: item.image?.url || image.url };
+  if (image) {
+    const remoteUrl = item.image?.remoteUrl || item.image?.url || image.url;
+    item.image = { ...item.image, ...image, url: remoteUrl, remoteUrl };
+  }
   return item;
 }

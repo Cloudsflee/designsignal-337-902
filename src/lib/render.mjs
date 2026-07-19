@@ -9,8 +9,9 @@ export function renderMarkdown(report) {
   return `${out.join('\n')}\n`;
 }
 
+const imageSource = image => image?.localCacheRef ? image.localCacheRef : image?.url;
 const itemHtml = item => `<article class="signal" data-category="${escapeHtml(item.category)}">
-  ${item.image ? `<img src="${escapeHtml(item.image.localCacheRef || item.image.url)}" alt="" loading="lazy" referrerpolicy="no-referrer">` : ''}
+  ${item.image ? `<img src="${escapeHtml(imageSource(item.image))}" alt="" loading="lazy" referrerpolicy="no-referrer">` : ''}
   <div><p class="meta">${escapeHtml(item.category.toUpperCase())} · ${escapeHtml(item.source.name)} · ${(item.confidence * 100).toFixed(0)}%</p><h2>${escapeHtml(item.title.zh)}</h2><p class="en">${escapeHtml(item.title.en)}</p><p>${escapeHtml(item.synopsis.zh)}</p><p class="en">${escapeHtml(item.synopsis.en)}</p>
   <details><summary>证据与方法 / Evidence & method</summary><p>${escapeHtml(item.analysis.zh.evidence)}</p><p>${escapeHtml(item.analysis.en.method)}</p><p><strong>Limits:</strong> ${escapeHtml(item.analysis.en.limits)}</p><a href="${escapeHtml(item.source.url)}" rel="noopener noreferrer">Primary source</a></details>
   <p class="tags">337 · ${item.exam['337'].map(escapeHtml).join(' · ')}</p><p class="tags">902 · ${item.exam['902'].map(escapeHtml).join(' · ')}</p></div></article>`;

@@ -19,7 +19,7 @@ export function validateItem(item) {
   item.citations.forEach((c, i) => url(c.url, `citations.${i}.url`));
   if (!Array.isArray(item.exam?.['337']) || !item.exam['337'].length || !Array.isArray(item.exam?.['902']) || !item.exam['902'].length) throw new Error('337 and 902 mappings required');
   if (!(item.confidence >= 0 && item.confidence <= 1)) throw new Error('confidence must be 0..1');
-  if (['product', 'ui'].includes(item.category)) { url(item.image?.url, 'image.url'); text(item.image?.licenseStatus, 'image.licenseStatus'); if (item.image.localCacheRef && !cacheRef(item.image.localCacheRef)) throw new Error('invalid image.localCacheRef'); }
+  if (['product', 'ui'].includes(item.category)) { url(item.image?.url, 'image.url'); if (item.image.remoteUrl) url(item.image.remoteUrl, 'image.remoteUrl'); text(item.image?.licenseStatus, 'image.licenseStatus'); if (item.image.localCacheRef && !cacheRef(item.image.localCacheRef)) throw new Error('invalid image.localCacheRef'); }
   for (const asset of item.assets || []) {
     if (!['article', 'pdf', 'image'].includes(asset.kind) || !/^[a-f0-9]{64}$/.test(asset.hash || '') || !Number.isSafeInteger(asset.bytes) || asset.bytes <= 0) throw new Error('invalid cached asset identity');
     text(asset.mime, 'asset.mime'); text(asset.retrievedAt, 'asset.retrievedAt'); text(asset.author, 'asset.author'); text(asset.institution, 'asset.institution'); text(asset.accessStatus, 'asset.accessStatus'); text(asset.licenseStatus, 'asset.licenseStatus');
