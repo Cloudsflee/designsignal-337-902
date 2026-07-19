@@ -54,7 +54,7 @@ export async function safeFetch(input, policy, options = {}) {
         }
         if (!response.ok) throw new Error(`HTTP ${response.status}`);
         const body = await readBoundedBody(response, maxBytes);
-        return { url: current, status: response.status, mime: response.headers.get('content-type')?.split(';')[0] || 'application/octet-stream', body, headers: response.headers };
+        return { url: current, status: response.status, mime: response.headers.get('content-type')?.split(';')[0]?.trim().toLowerCase() || 'application/octet-stream', body, headers: response.headers };
       } catch (error) {
         last = error;
         if (attempt < policy.retries) await sleep(150 * 2 ** attempt);

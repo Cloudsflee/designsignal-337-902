@@ -1,7 +1,7 @@
 import { loadExamEvidence } from './evidence.mjs';
 import { validateReport } from './schema.mjs';
 
-export async function buildReport({ date, items, rejected, health, selectionPolicy, fixture = false }) {
+export async function buildReport({ date, items, rejected, health, selectionPolicy, assetAudit = [], fixture = false }) {
   const evidence = await loadExamEvidence();
   const citations = items.map(x => x.citations[0]?.url).filter(Boolean);
   const report = {
@@ -23,7 +23,7 @@ export async function buildReport({ date, items, rejected, health, selectionPoli
       answerFramework: ['Claim and boundary', 'Evidence quality', 'Stakeholders and excluded user', 'System chain and technology rationale', 'Weakest link and fallback', 'Metrics, data governance, ethics'],
       evidenceLinks: [...new Set([...citations, ...evidence.sources.map(x => x.url)])]
     },
-    audit: { selectionPolicy, rejected, sourceHealth: health }
+    audit: { selectionPolicy, rejected, sourceHealth: health, assets: assetAudit }
   };
   return validateReport(report);
 }

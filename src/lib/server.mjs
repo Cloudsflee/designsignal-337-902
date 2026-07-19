@@ -1,9 +1,9 @@
 import { createServer } from 'node:http';
-import { appendFile, readFile, readdir } from 'node:fs/promises';
+import { appendFile, lstat, readFile, readdir } from 'node:fs/promises';
 import path from 'node:path';
 import { latestReport } from './storage.mjs';
 import { renderHtml } from './render.mjs';
-import { json } from './util.mjs';
+import { json, sha256 } from './util.mjs';
 import { loadExamEvidence } from './evidence.mjs';
 
 const APP_JS = `document.querySelectorAll('[data-filter]').forEach(b=>b.onclick=()=>{document.querySelectorAll('[data-filter]').forEach(x=>x.setAttribute('aria-pressed',String(x===b)));document.querySelectorAll('.signal').forEach(x=>x.classList.toggle('hidden',b.dataset.filter!=='all'&&x.dataset.category!==b.dataset.filter))})`;
@@ -24,6 +24,27 @@ export async function handleDashboardRequest(config, req, res) {
       const url = new URL(req.url, 'http://local');
       if (req.method === 'GET' && url.pathname === '/healthz') return json(res, 200, { status: 'ok', service: 'designsignal', time: new Date().toISOString() });
       if (req.method === 'GET' && url.pathname === '/app.js') { res.writeHead(200, { 'content-type': 'text/javascript; charset=utf-8', 'cache-control': 'public, max-age=3600' }); return res.end(APP_JS); }
+      if (req.method === 'GET' && url.pathname.startsWith('/assets/')) {
+        const hash = url.pathname.slice('/assets/'.length);
+        if (!/^[a-f0-9]{64}$/.test(hash)) return json(res, 404, { error: 'asset not found' });
+        try {
+          const cacheDir = path.resolve(config.dataDir, 'cache');
+          const metaPath = path.resolve(cacheDir, `${hash}.json`), assetPath = path.resolve(cacheDir, `${hash}.bin`);
+          if (path.dirname(metaPath) !== cacheDir || path.dirname(assetPath) !== cacheDir) return json(res, 404, { error: 'asset not found' });
+          const stats = await Promise.all([lstat(metaPath), lstat(assetPath)]);
+          if (stats.some(x => !x.isFile() || x.isSymbolicLink())) return json(res, 404, { error: 'asset not found' });
+          const [meta, asset] = await Promise.all([readFile(metaPath, 'utf8').then(JSON.parse), readFile(assetPath)]);
+          if (meta.hash !== hash || sha256(asset) !== hash || !['application/pdf', 'text/html', 'text/plain', 'application/xhtml+xml', 'image/jpeg', 'image/png', 'image/gif', 'image/webp'].includes(meta.mime)) return json(res, 404, { error: 'asset not found' });
+          const assetHeaders = { 'content-type': meta.mime, 'content-length': asset.length, 'cache-control': 'public, max-age=31536000, immutable' };
+          if (meta.mime === 'application/pdf') assetHeaders['content-disposition'] = 'inline';
+          if (meta.mime.startsWith('text/') || meta.mime === 'application/xhtml+xml') {
+            assetHeaders['content-disposition'] = 'attachment; filename="public-article.txt"';
+            assetHeaders['content-security-policy'] = "sandbox; default-src 'none'; frame-ancestors 'none'";
+          }
+          res.writeHead(200, assetHeaders);
+          return res.end(asset);
+        } catch { return json(res, 404, { error: 'asset not found' }); }
+      }
       if (req.method === 'GET' && url.pathname === '/api/report') { const report = await latestReport(config.dataDir); return json(res, report ? 200 : 404, report || { error: 'no report' }); }
       if (req.method === 'GET' && url.pathname === '/api/evidence') return json(res, 200, await loadExamEvidence());
       if (req.method === 'GET' && url.pathname === '/api/source-health') { const report = await latestReport(config.dataDir); return json(res, report ? 200 : 404, report?.audit.sourceHealth || { error: 'no report' }); }

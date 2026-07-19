@@ -8,17 +8,16 @@ const tag = (xml, names) => {
 };
 const attrLink = xml => xml.match(/<link[^>]+(?:href=["']([^"']+)["'])[^>]*>/i)?.[1] || tag(xml, ['link']);
 const blocks = (xml, name) => [...xml.matchAll(new RegExp(`<${name}(?:\\s[^>]*)?>([\\s\\S]*?)<\\/${name}>`, 'gi'))].map(x => x[1]);
-const imageFrom = xml => xml.match(/<(?:media:content|media:thumbnail)[^>]+url=["']([^"']+)["']/i)?.[1] || xml.match(/<img[^>]+src=["']([^"']+)["']/i)?.[1];
+const imageFrom = xml => xml.match(/<(?:media:content|media:thumbnail)[^>]+url=["']([^"']+)["']/i)?.[1] || xml.match(/<enclosure[^>]+url=["']([^"']+)["'][^>]+type=["']image\//i)?.[1] || xml.match(/<img[^>]+src=["']([^"']+)["']/i)?.[1];
 const idFor = (source, url) => `${source.id}-${sha256(url).slice(0, 16)}`;
+const publicUrl = (value, base) => { if (typeof value !== 'string' || !value.trim()) return ''; try { const url = new URL(value, base); return ['http:', 'https:'].includes(url.protocol) && !url.username && !url.password ? url.href : ''; } catch { return ''; } };
 
 function raw(source, values) {
-  const text = `${values.title || ''}\n${values.summary || ''}`;
   const retrievedAt = new Date().toISOString();
   return {
     id: idFor(source, values.url), category: source.category,
-    source: { id: source.id, name: source.id, url: values.url, locale: source.locale, credibility: ['openalex', 'arxiv'].includes(source.adapter) ? 'scholarly-index-or-repository' : source.adapter === 'page' ? 'institutional-page' : 'editorial-feed' }, ...values,
-    retrievedAt,
-    cache: { url: values.url, retrievedAt, mime: 'text/plain', bytes: Buffer.byteLength(text), hash: sha256(text), author: (values.authors || []).join(', '), institution: values.institution || source.id, accessStatus: values.rights?.access || 'public-metadata', licenseStatus: values.rights?.licenseStatus || 'unknown' }
+    source: { id: source.id, name: source.name || source.id, url: values.url, locale: source.locale, credibility: ['openalex', 'arxiv'].includes(source.adapter) ? 'scholarly-index-or-repository' : ['page', 'listing'].includes(source.adapter) ? 'institutional-page' : 'editorial-feed' }, ...values,
+    retrievedAt
   };
 }
 
@@ -52,9 +51,10 @@ export async function feedAdapter(source, config, ctx = {}) {
   const xml = body.toString('utf8');
   const entries = blocks(xml, 'item').length ? blocks(xml, 'item') : blocks(xml, 'entry');
   return entries.slice(0, 30).map(entry => {
-    const url = attrLink(entry);
-    return raw(source, { url, title: tag(entry, ['title']), summary: tag(entry, ['description', 'summary', 'content:encoded', 'content']), publishedAt: tag(entry, ['pubDate', 'published', 'updated']), authors: [tag(entry, ['dc:creator', 'author'])].filter(Boolean), institution: source.id, imageUrl: imageFrom(entry), rights: { access: 'public-feed', licenseStatus: 'linked-only' } });
-  }).filter(x => x.url && x.title);
+    const url = publicUrl(attrLink(entry), source.url);
+    if (!url) return null;
+    return raw(source, { url, title: tag(entry, ['title']), summary: tag(entry, ['description', 'summary', 'content:encoded', 'content']), publishedAt: tag(entry, ['pubDate', 'published', 'updated']), authors: [tag(entry, ['dc:creator', 'author'])].filter(Boolean), institution: source.id, imageUrl: publicUrl(imageFrom(entry), url), rights: { access: 'public-feed', licenseStatus: 'linked-only' } });
+  }).filter(x => x?.title);
 }
 
 export async function pageAdapter(source, config, ctx = {}) {
@@ -62,12 +62,52 @@ export async function pageAdapter(source, config, ctx = {}) {
   const html = body.toString('utf8');
   const title = entities(html.match(/<title[^>]*>([\s\S]*?)<\/title>/i)?.[1]);
   const description = entities(html.match(/<meta[^>]+(?:name|property)=["'](?:description|og:description)["'][^>]+content=["']([^"']+)/i)?.[1]);
-  const imageUrl = html.match(/<meta[^>]+property=["']og:image["'][^>]+content=["']([^"']+)/i)?.[1];
+  const imageUrl = publicUrl(html.match(/<meta[^>]+property=["']og:image["'][^>]+content=["']([^"']+)/i)?.[1], url);
   const publishedAt = html.match(/<meta[^>]+property=["']article:published_time["'][^>]+content=["']([^"']+)/i)?.[1] || html.match(/<time[^>]+datetime=["']([^"']+)/i)?.[1] || '';
   return [raw(source, { url, title, summary: description, publishedAt, authors: [], institution: source.id, imageUrl, rights: { access: 'public-page', licenseStatus: 'linked-only' } })];
 }
 
-export const adapters = { openalex: openAlexAdapter, arxiv: arxivAdapter, feed: feedAdapter, page: pageAdapter };
+const dated = value => {
+  const source = entities(value);
+  const match = source.match(/\b(20\d{2})[年/.\-](0?[1-9]|1[0-2])[月/.\-](0?[1-9]|[12]\d|3[01])日?\b/);
+  if (match) return `${match[1]}-${match[2].padStart(2, '0')}-${match[3].padStart(2, '0')}`;
+  const months = { jan: '01', feb: '02', mar: '03', apr: '04', may: '05', jun: '06', jul: '07', aug: '08', sep: '09', oct: '10', nov: '11', dec: '12' };
+  const regular = source.match(/\b([A-Za-z]{3,9})\s+(\d{1,2}),?\s+(20\d{2})\b/);
+  if (regular) { const month = months[regular[1].slice(0, 3).toLowerCase()]; if (month) return `${regular[3]}-${month}-${regular[2].padStart(2, '0')}`; }
+  const reversed = source.match(/\b(\d{1,2})\s+([A-Za-z]{3,9})\s+(20\d{2})\b/);
+  if (reversed) { const month = months[reversed[2].slice(0, 3).toLowerCase()]; if (month) return `${reversed[3]}-${month}-${reversed[1].padStart(2, '0')}`; }
+  return '';
+};
+
+const hrefFrom = anchor => anchor.match(/\bhref\s*=\s*["']([^"']+)["']/i)?.[1] || '';
+const titleFrom = anchor => entities(anchor.match(/\btitle\s*=\s*["']([^"']+)["']/i)?.[1] || anchor.replace(/^<a\b[^>]*>|<\/a>$/gi, ''));
+
+export async function listingAdapter(source, config, ctx = {}) {
+  const { body, url: listingUrl } = await safeFetch(source.url, config.network, { ...ctx, maxBytes: config.network.maxPageBytes, accept: 'text/html, application/xhtml+xml' });
+  const html = body.toString('utf8');
+  const sections = [...html.matchAll(/<(?:article|li|div)\b[^>]*>([\s\S]{0,5000}?)<\/(?:article|li|div)>/gi)].map(x => x[0]);
+  const candidates = [];
+  for (const section of sections) {
+    const publishedAt = dated(section);
+    if (!publishedAt) continue;
+    const anchor = section.match(/<a\b[^>]*>[\s\S]*?<\/a>/i)?.[0];
+    if (!anchor) continue;
+    const href = hrefFrom(anchor), title = titleFrom(anchor);
+    if (!href || !title || /^(?:javascript:|mailto:|#)/i.test(href)) continue;
+    let articleUrl;
+    try {
+      articleUrl = new URL(href, listingUrl);
+      if (!['http:', 'https:'].includes(articleUrl.protocol) || articleUrl.username || articleUrl.password || !config.network.allowHosts.includes(articleUrl.hostname.toLowerCase())) continue;
+    } catch { continue; }
+    const imageRef = section.match(/<img\b[^>]+(?:src|data-src)=["']([^"']+)["']/i)?.[1];
+    let imageUrl = '';
+    try { if (imageRef) imageUrl = new URL(imageRef, listingUrl).href; } catch {}
+    candidates.push(raw(source, { url: articleUrl.href, title, summary: entities(section).slice(0, 1500), publishedAt, authors: [], institution: source.institution || source.name || source.id, imageUrl, rights: { access: 'public-page', licenseStatus: 'linked-only' } }));
+  }
+  return [...new Map(candidates.map(x => [x.source.url, x])).values()].slice(0, 30);
+}
+
+export const adapters = { openalex: openAlexAdapter, arxiv: arxivAdapter, feed: feedAdapter, page: pageAdapter, listing: listingAdapter };
 
 export async function collectSources(config, ctx = {}) {
   const candidates = [], health = [];
@@ -76,9 +116,9 @@ export async function collectSources(config, ctx = {}) {
     try {
       const items = await adapters[source.adapter](source, config, ctx);
       candidates.push(...items);
-      health.push({ sourceId: source.id, status: 'ok', count: items.length, durationMs: Date.now() - started });
+      health.push({ sourceId: source.id, status: 'ok', count: items.length, durationMs: Date.now() - started, optional: Boolean(source.optional) });
     } catch (error) {
-      health.push({ sourceId: source.id, status: 'degraded', count: 0, durationMs: Date.now() - started, reason: error.message });
+      health.push({ sourceId: source.id, status: 'degraded', count: 0, durationMs: Date.now() - started, optional: Boolean(source.optional), impact: source.optional ? 'optional-source-degraded' : 'required-source-degraded', reason: error.message });
     }
   }
   return { candidates, health };

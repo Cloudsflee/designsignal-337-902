@@ -11,7 +11,7 @@ node src/cli.mjs daily
 node src/cli.mjs serve
 ```
 
-Open `http://127.0.0.1:3379`. The five primary commands are `collect`, `daily`, `serve`, `doctor`, and `schedule`. `node src/cli.mjs push retry` retries the durable delivery outbox. Use `--config /absolute/path/config.json` for an explicit private config. Values are read into process memory only; credentials are never written to reports, caches, logs, or outbox jobs.
+Open `http://127.0.0.1:3379`. The five primary commands are `collect`, `daily`, `serve`, `doctor`, and `schedule`. `node src/cli.mjs push retry` retries the durable delivery outbox. Use `--config /absolute/path/config.json` for an explicit private DesignSignal config. Model settings can also come from `CODEX_CONFIG_FILE`, falling back to `$CODEX_HOME/config.toml`; the selected top-level `model`/`model_provider` and provider `base_url`, `wire_api`, and `experimental_bearer_token` are read with `OPENAI_*` taking precedence. Values remain in process memory and credentials are never written to reports, caches, logs, or outbox jobs.
 
 Live bilingual enrichment requires an OpenAI-compatible Responses API:
 
@@ -22,7 +22,9 @@ export OPENAI_BASE_URL=https://api.openai.com/v1
 node src/cli.mjs daily
 ```
 
-The fixture is synthetic, offline test material and is always labeled `fixture: true`; it is not a live intelligence report. `--dry-run` performs no writes. Live output is stored under `data/reports/YYYY-MM-DD/`, with an append-only `data/manifest.ndjson`, per-date locks, source health, rejection audit, and pending push jobs.
+Optional public RSSHub feeds can be supplied with `DESIGNSIGNAL_RSSHUB_FEEDS`, `DESIGNSIGNAL_RSSHUB_WECHAT_FEEDS`, or `DESIGNSIGNAL_RSSHUB_ZHIHU_FEEDS` as comma-separated URLs. They are always treated as optional public sources; login, CAPTCHA, paywall, and private-content access are never attempted, and failures are reported as optional degradation.
+
+The fixture is synthetic, offline test material and is always labeled `fixture: true`; fixture runs and every `--dry-run` perform no writes. Live output is stored under `data/reports/YYYY-MM-DD/`, with an append-only `data/manifest.ndjson`, per-date locks, source health, rejection and asset audits, bounded public/OA assets, and pending push jobs. Cached images are served from hash-only `/assets/<sha256>` routes.
 
 ## Commands
 

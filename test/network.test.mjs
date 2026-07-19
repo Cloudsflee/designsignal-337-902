@@ -27,7 +27,8 @@ test('cache only admits bounded public data and OA PDFs', async () => {
   const dir = await mkdtemp(path.join(os.tmpdir(), 'ds-cache-'));
   const limits = { maxPdfBytes: 10, maxImageBytes: 10, maxPageBytes: 10 };
   await assert.rejects(() => cachePublicAsset(dir, { url: 'https://example.com/a.pdf', mime: 'application/pdf', accessStatus: 'public-page' }, Buffer.from('pdf'), limits), /OA/);
-  const meta = await cachePublicAsset(dir, { url: 'https://example.com/a.pdf', mime: 'application/pdf', accessStatus: 'open-access', licenseStatus: 'cc-by', author: 'A', institution: 'I' }, Buffer.from('pdf'), limits);
-  assert.equal(meta.bytes, 3); assert.match(meta.hash, /^[a-f0-9]{64}$/);
+  const pdf = Buffer.from('%PDF-1.7\n');
+  const meta = await cachePublicAsset(dir, { url: 'https://example.com/a.pdf', mime: 'application/pdf', accessStatus: 'open-access', licenseStatus: 'cc-by', author: 'A', institution: 'I' }, pdf, limits);
+  assert.equal(meta.bytes, pdf.length); assert.match(meta.hash, /^[a-f0-9]{64}$/);
   await rm(dir, { recursive: true, force: true });
 });
