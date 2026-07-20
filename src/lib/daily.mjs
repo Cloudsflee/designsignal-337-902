@@ -5,7 +5,7 @@ import { collectSources } from './adapters.mjs';
 import { selectDaily } from './select.mjs';
 import { enrichItems, synthesizeDaily } from './model.mjs';
 import { buildReport } from './report.mjs';
-import { readHistory, writeReport } from './storage.mjs';
+import { readHistory, recoverReport, writeReport } from './storage.mjs';
 import { queueDeliveries, retryOutbox } from './push.mjs';
 import { atomicWrite, isoDate } from './util.mjs';
 import { attachCachedAssets, persistSelectedAssets } from './assets.mjs';
@@ -17,6 +17,14 @@ export async function collect(config, { dryRun = false, ctx = {} } = {}) {
 }
 
 export async function daily(config, { fixture = false, dryRun = false, date = isoDate(new Date(), config.timezone), ctx = {} } = {}) {
+  if (!fixture && !dryRun) {
+    const recovered = await recoverReport(config.dataDir, date);
+    if (recovered) {
+      await queueDeliveries(config.dataDir, recovered.report, config);
+      const deliveries = await retryOutbox(config.dataDir, config, ctx);
+      return { ...recovered, deliveries };
+    }
+  }
   const collected = fixture ? { candidates: fixtureCandidates, health: [{ sourceId: 'offline-fixture', status: 'ok', count: fixtureCandidates.length, durationMs: 0 }] } : await collectSources(config, ctx);
   const history = fixture ? [] : await readHistory(config.dataDir);
   const { selected, rejected, policy } = selectDaily(collected.candidates, { date, history });
@@ -26,7 +34,7 @@ export async function daily(config, { fixture = false, dryRun = false, date = is
   const report = await buildReport({ date, items, rejected, health: collected.health, selectionPolicy: policy, assetAudit: persisted.audit, fixture, generated });
   if (dryRun || fixture) return { status: dryRun ? 'dry-run' : 'fixture-no-write', report };
   const result = await writeReport(config.dataDir, report);
-  if (result.status === 'written') await queueDeliveries(config.dataDir, report, config);
+  await queueDeliveries(config.dataDir, result.report, config);
   const deliveries = await retryOutbox(config.dataDir, config, ctx);
   return { ...result, deliveries };
 }

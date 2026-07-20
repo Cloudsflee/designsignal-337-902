@@ -16,7 +16,19 @@ export async function queueDeliveries(dataDir, report, config) {
   for (const channel of channels) {
     const endpoint = config.push[channel];
     const job = { id: sha256(`${report.date}:${channel}`).slice(0, 24), channel, reportDate: report.date, endpointConfigured: Boolean(endpoint), state: 'pending', reason: endpoint ? 'queued' : 'missing-secret-or-endpoint', attempts: 0, nextAttemptAt: new Date().toISOString(), createdAt: new Date().toISOString(), payload: payload(channel, report) };
-    await atomicWrite(path.join(dir, `${job.id}.json`), `${JSON.stringify(job, null, 2)}\n`); jobs.push(job);
+    const file = path.join(dir, `${job.id}.json`);
+    let stored;
+    try { stored = JSON.parse(await readFile(file, 'utf8')); }
+    catch (error) {
+      if (error.code !== 'ENOENT') throw error;
+      try { await atomicWrite(file, `${JSON.stringify(job, null, 2)}\n`, { overwrite: false }); stored = job; }
+      catch (createError) {
+        if (createError.code !== 'EEXIST') throw createError;
+        stored = JSON.parse(await readFile(file, 'utf8'));
+      }
+    }
+    if (stored.id !== job.id || stored.channel !== channel || stored.reportDate !== report.date || JSON.stringify(stored.payload) !== JSON.stringify(job.payload)) throw new Error(`conflicting outbox job identity for ${job.id}`);
+    jobs.push(stored);
   }
   return jobs;
 }

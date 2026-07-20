@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import { mkdir, readFile, writeFile, rename, open, rm } from 'node:fs/promises';
+import { link, mkdir, readFile, rename, open, rm } from 'node:fs/promises';
 import path from 'node:path';
 
 export const sha256 = value => createHash('sha256').update(value).digest('hex');
@@ -22,11 +22,22 @@ export const parseArgs = args => {
   return out;
 };
 export async function readJson(file) { return JSON.parse(await readFile(file, 'utf8')); }
-export async function atomicWrite(file, content) {
+export async function atomicWrite(file, content, { overwrite = true } = {}) {
   await mkdir(path.dirname(file), { recursive: true });
-  const temp = `${file}.${process.pid}.${Date.now()}.tmp`;
-  await writeFile(temp, content, { mode: 0o600 });
-  await rename(temp, file);
+  const temp = `${file}.${process.pid}.${Date.now()}.${Math.random().toString(16).slice(2)}.tmp`;
+  let handle;
+  try {
+    handle = await open(temp, 'wx', 0o600);
+    await handle.writeFile(content);
+    await handle.sync();
+    await handle.close();
+    handle = undefined;
+    if (overwrite) await rename(temp, file);
+    else await link(temp, file);
+  } finally {
+    if (handle) await handle.close().catch(() => {});
+    await rm(temp, { force: true }).catch(() => {});
+  }
 }
 export async function withLock(lockFile, fn) {
   await mkdir(path.dirname(lockFile), { recursive: true });
