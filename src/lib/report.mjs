@@ -1,5 +1,6 @@
 import { loadExamEvidence } from './evidence.mjs';
 import { validateReport } from './schema.mjs';
+import { buildBriefing } from './briefing.mjs';
 
 const bi = (zh, en) => ({ zh, en });
 
@@ -60,7 +61,7 @@ export async function buildReport({ date, items, rejected, health, selectionPoli
   if (!fixture && !generated) throw new Error('live report requires dynamic synthesis');
   const content = generated || offlineSynthesis(items, evidence);
   const report = {
-    schemaVersion: 3, date, generatedAt: new Date().toISOString(), fixture,
+    schemaVersion: 4, date, generatedAt: new Date().toISOString(), fixture,
     evidence: {
       version: evidence.evidenceVersion,
       hash: evidence.documentSha256,
@@ -78,6 +79,7 @@ export async function buildReport({ date, items, rejected, health, selectionPoli
       hypotheses: content.hypotheses
     },
     exercise: content.exercise,
+    briefing: buildBriefing(items),
     audit: { selectionPolicy, rejected, sourceHealth: health, assets: assetAudit, synthesis: fixture ? 'offline-fixture' : 'responses-api' }
   };
   return validateReport(report);

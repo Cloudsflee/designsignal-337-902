@@ -489,7 +489,7 @@ test('immutable schema v2 report reads and recovers under its legacy audit contr
   assert.equal(await readFile(reportFile, 'utf8'), storedJson);
   assert.equal(await readFile(path.join(dir, 'manifest.ndjson'), 'utf8'), manifestJson);
   const publishDir = await mkdtemp(path.join(os.tmpdir(), 'ds-v2-publish-'));
-  await assert.rejects(() => writeReport(publishDir, report), /new reports must use schema version 3/);
+  await assert.rejects(() => writeReport(publishDir, report), /new reports must use schema version 4/);
   await rm(publishDir, { recursive: true, force: true });
   await rm(dir, { recursive: true, force: true });
 });
@@ -503,7 +503,7 @@ test('daily recovers report and manifest before collection and recreates only mi
   const first = await daily(config, { date: report.date, ctx }), second = await daily(config, { date: report.date, ctx });
   assert.equal(first.status, 'exists'); assert.equal(second.status, 'exists'); assert.equal(networkCalls, 0);
   assert.equal((await readFile(path.join(dir, 'manifest.ndjson'), 'utf8')).trim().split('\n').length, 1);
-  assert.equal((await readdir(path.join(dir, 'outbox'))).length, 3);
+  assert.equal((await readdir(path.join(dir, 'outbox'))).length, 1);
   await rm(dir, { recursive: true, force: true });
 });
 
@@ -545,19 +545,16 @@ test('23:50 Shanghai calculation is exact from UTC', () => {
   assert.equal(nextScheduledAt(new Date('2026-01-01T15:50:30Z'), 'Asia/Shanghai').toISOString(), '2026-01-02T15:50:00.000Z');
 });
 
-test('push outbox retains missing secrets and retries configured webhook', async () => {
+test('push outbox queues one pending Feishu document when configuration is missing', async () => {
   const dir = await mkdtemp(path.join(os.tmpdir(), 'ds-push-')), report = await fixtureReport();
   const base = { network: { allowHosts: [], timeoutMs: 100, retries: 0 }, push: { generic: '', feishu: '', wecom: '' } };
-  let jobs = await queueDeliveries(dir, report, base); assert.equal(jobs.length, 3); assert.ok(jobs.every(x => x.state === 'pending' && /missing/.test(x.reason)));
-  base.push.generic = 'https://hooks.example.com/daily'; let calls = 0;
-  await retryOutbox(dir, base, { dnsLookup: async () => [{ address: '8.8.8.8' }], fetchImpl: async () => { calls++; return new Response('', { status: 200 }); } });
-  jobs = await Promise.all((await readdir(path.join(dir, 'outbox'))).map(x => readFile(path.join(dir, 'outbox', x), 'utf8').then(JSON.parse)));
-  assert.equal(calls, 1); assert.equal(jobs.find(x => x.channel === 'generic').state, 'delivered'); assert.ok(jobs.filter(x => x.channel !== 'generic').every(x => x.state === 'pending'));
-  assert.ok(jobs.every(x => !('endpoint' in x)));
+  const jobs = await queueDeliveries(dir, report, base);
+  assert.equal(jobs.length, 1); assert.equal(jobs[0].channel, 'feishu-document'); assert.match(jobs[0].reason, /missing/);
+  assert.ok(!('payload' in jobs[0]) && !('endpoint' in jobs[0]));
   await rm(dir, { recursive: true, force: true });
 });
 
-test('retryOutbox returns unchanged missing-endpoint jobs without rewriting them', async () => {
+test('retryOutbox returns an unchanged missing-config document job without rewriting it', async () => {
   const dir = await mkdtemp(path.join(os.tmpdir(), 'ds-push-no-write-')), report = await fixtureReport();
   const config = { network: { allowHosts: [], timeoutMs: 100, retries: 0 }, push: { generic: '', feishu: '', wecom: '' } };
   const jobs = await queueDeliveries(dir, report, config);
@@ -579,14 +576,15 @@ test('retryOutbox returns unchanged missing-endpoint jobs without rewriting them
   await rm(dir, { recursive: true, force: true });
 });
 
-test('queueDeliveries preserves delivered jobs and creates only missing identities', async () => {
+test('queueDeliveries preserves an existing document job and rejects identity conflicts', async () => {
   const dir = await mkdtemp(path.join(os.tmpdir(), 'ds-push-preserve-')), report = await fixtureReport();
   const config = { network: { allowHosts: [], timeoutMs: 100, retries: 0 }, push: { generic: '', feishu: '', wecom: '' } };
-  const jobs = await queueDeliveries(dir, report, config), delivered = { ...jobs.find(job => job.channel === 'generic'), state: 'delivered', reason: '', deliveredAt: '2026-07-19T12:00:00.000Z' };
+  const documentId = ['doc', 'cn', 'fixture', '1234'].join('');
+  const jobs = await queueDeliveries(dir, report, config), delivered = { ...jobs[0], state: 'delivered', reason: '', documentId, revisionId: 2, nextBlockIndex: jobs[0].totalBlocks, deliveredAt: '2026-07-19T12:00:00.000Z' };
   await atomicWrite(path.join(dir, 'outbox', `${delivered.id}.json`), `${JSON.stringify(delivered, null, 2)}\n`);
   await queueDeliveries(dir, report, config);
   const stored = JSON.parse(await readFile(path.join(dir, 'outbox', `${delivered.id}.json`), 'utf8'));
-  assert.deepEqual(stored, delivered); assert.equal((await readdir(path.join(dir, 'outbox'))).length, 3);
+  assert.deepEqual(stored, delivered); assert.equal((await readdir(path.join(dir, 'outbox'))).length, 1);
   const conflicting = { ...stored, reportDate: '2026-07-20' };
   await atomicWrite(path.join(dir, 'outbox', `${delivered.id}.json`), `${JSON.stringify(conflicting)}\n`);
   await assert.rejects(() => queueDeliveries(dir, report, config), /conflicting outbox job identity/);

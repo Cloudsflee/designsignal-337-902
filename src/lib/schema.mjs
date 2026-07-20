@@ -1,3 +1,4 @@
+import { buildBriefing } from './briefing.mjs';
 const categories = new Set(['paper', 'product', 'ui', 'frontier']);
 const analysisFields = ['evidence', 'method', 'novelty', 'limits', 'whyLearn', 'studyAction'];
 const text = (value, name, max = 12000) => {
@@ -220,7 +221,7 @@ export function validateSynthesis(value, items, evidence) {
 }
 
 export function validateReport(report) {
-  if (![2, 3].includes(report.schemaVersion)) throw new Error('unsupported report schema version');
+  if (![2, 3, 4].includes(report.schemaVersion)) throw new Error('unsupported report schema version');
   if (!/^\d{4}-\d{2}-\d{2}$/.test(report.date)) throw new Error('invalid report date');
   if (!Array.isArray(report.items) || report.items.length !== 6) throw new Error('report must contain exactly six items');
   report.items.forEach(validateItem);
@@ -229,14 +230,15 @@ export function validateReport(report) {
     for (const citation of item.citations) if (!itemUrls.has(citation.url)) throw new Error(`item ${item.id} contains invented citation URL`);
   }
   if (new Set(report.items.map(item => item.id)).size !== report.items.length) throw new Error('report item IDs must be unique');
+  if (report.schemaVersion === 4 && report.items.some(item => !/^[A-Za-z0-9][A-Za-z0-9._:-]{0,299}$/.test(item.id))) throw new Error('schema v4 report item IDs must be safe identifiers');
   const counts = report.items.reduce((all, item) => ({ ...all, [item.category]: (all[item.category] || 0) + 1 }), {});
   if (counts.paper !== 2 || counts.product !== 1 || counts.ui !== 1 || counts.frontier !== 2) throw new Error('quota must be 2 paper, 1 product, 1 UI, 2 frontier');
   if (new Set(report.items.map(item => item.source.id)).size < 4) throw new Error('report requires at least four distinct sources');
   const locales = new Set(report.items.map(item => item.source.locale));
   if (!locales.has('zh') || !locales.has('en')) throw new Error('report requires zh-origin and en-origin sources');
-  // Schema v2 predates the priority-institution audit. Keep its original
-  // report contract while requiring the complete policy audit for v3.
-  if (report.schemaVersion === 3) validateSelectionPolicy(report.audit?.selectionPolicy, report.items, report.audit?.rejected);
+  // Schema v2 predates the priority-institution audit. Its immutable contract
+  // remains readable; v3 and v4 require the complete selection policy.
+  if (report.schemaVersion >= 3) validateSelectionPolicy(report.audit?.selectionPolicy, report.items, report.audit?.rejected);
   const evidenceShape = {
     sources: report.evidence.sources,
     exam337: { parts: [{ topics: report.evidence.allowedTopics?.['337'] || [] }] },
@@ -247,5 +249,12 @@ export function validateReport(report) {
     report.items.forEach(item => exactSubset(item.exam[exam], allowed, `item ${item.id} exam.${exam}`));
   }
   validateSynthesis({ ...report.synthesis, exercise: report.exercise }, report.items, evidenceShape);
+  if (report.schemaVersion === 4) {
+    const expected = buildBriefing(report.items);
+    if (JSON.stringify(report.briefing) !== JSON.stringify(expected)) throw new Error('briefing classification, coverage, references, totals, or review route is invalid');
+    for (const [exam, coverage] of Object.entries(report.briefing.coverage)) {
+      if (coverage.parts.some(part => !part.itemIds.length || !part.topicRefs.length)) throw new Error(`briefing coverage for ${exam} must reference every official part`);
+    }
+  }
   return report;
 }

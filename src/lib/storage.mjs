@@ -87,7 +87,7 @@ export async function writeReport(dataDir, report) {
       const status = await reconcileManifest(dataDir, existing.report, existing.json);
       return { status, dir: finalDir, report: existing.report };
     }
-    if (report.schemaVersion !== 3) throw new Error('new reports must use schema version 3');
+    if (report.schemaVersion !== 4) throw new Error('new reports must use schema version 4');
     validateReport(report);
     if (await exists(finalDir)) throw new Error(`incomplete report directory for ${report.date}`);
     await mkdir(reports, { recursive: true });

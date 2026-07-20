@@ -31,7 +31,7 @@ try {
     const selection = selectDaily(fixtureCandidates, { date: '2026-07-19', history: [], priorityInstitutionPaper: config.selection.priorityInstitutionPaper }); const report = await buildReport({ date: '2026-07-19', items: selection.selected, rejected: selection.rejected, health: [], selectionPolicy: selection.policy, fixture: true });
     checks.push({ name: 'offline-fixture', ok: report.items.length === 6, detail: `${report.items.length} validated items` });
     await mkdir(config.dataDir, { recursive: true }); await access(config.dataDir); checks.push({ name: 'data-dir', ok: true, detail: path.resolve(config.dataDir) });
-    const ok = checks.every(x => x.ok); print({ ok, checks, modelConfigured: Boolean(config.model.model && config.model.token), pushConfigured: Object.fromEntries(Object.entries(config.push).map(([k, v]) => [k, Boolean(v)])) }); if (!ok) process.exitCode = 1;
+    const ok = checks.every(x => x.ok); print({ ok, checks, modelConfigured: Boolean(config.model.model && config.model.token), feishuDocumentConfigured: Boolean(config.feishuDocument.appId && config.feishuDocument.appSecret && config.feishuDocument.folderToken) }); if (!ok) process.exitCode = 1;
   } else if (command === 'schedule') await runScheduler(() => daily(config), { timeZone: config.timezone });
   else if (command === 'push' && args._[0] === 'retry') print(await retryOutbox(config.dataDir, config));
   else { process.stderr.write('Usage: node src/cli.mjs collect|daily|serve|doctor|schedule [--fixture] [--dry-run] [--json] [--config PATH]\n'); process.exitCode = 2; }

@@ -188,7 +188,7 @@ export async function withLock(lockFile, fn) {
   finally { await handle.close(); await rm(lockFile, { force: true }); }
 }
 export const redact = value => {
-  const sensitive = /(api[-_]?key|authorization|token|secret|webhook|mailto)/i;
+  const sensitive = /(api[-_]?key|app[-_]?id|authorization|endpoint|folder|token|secret|webhook|mailto)/i;
   const visit = (v, key = '') => {
     if (sensitive.test(key)) return '[REDACTED]';
     if (Array.isArray(v)) return v.map(x => visit(x));

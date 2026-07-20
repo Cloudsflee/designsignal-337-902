@@ -116,10 +116,11 @@ export async function loadConfig({ configPath, env = process.env } = {}) {
       apiKey: env.OPENALEX_API_KEY || '',
       mailto: env.OPENALEX_MAILTO || ''
     },
-    push: {
-      generic: env.DESIGNSIGNAL_WEBHOOK_URL || explicit.push?.generic || '',
-      feishu: env.FEISHU_WEBHOOK_URL || explicit.push?.feishu || '',
-      wecom: env.WECOM_WEBHOOK_URL || explicit.push?.wecom || ''
+    feishuDocument: {
+      appId: env.FEISHU_APP_ID || '',
+      appSecret: env.FEISHU_APP_SECRET || '',
+      folderToken: env.FEISHU_DOC_FOLDER_TOKEN || '',
+      tenantBaseUrl: env.FEISHU_TENANT_BASE_URL || 'https://feishu.cn'
     },
     study: {
       profileFile: env.DESIGNSIGNAL_STUDY_PROFILE_FILE ? path.resolve(env.DESIGNSIGNAL_STUDY_PROFILE_FILE) : explicit.study?.profileFile ? path.resolve(explicit.study.profileFile) : '',
@@ -140,6 +141,11 @@ export async function loadConfig({ configPath, env = process.env } = {}) {
     const modelUrl = new URL(config.model.baseUrl);
     if (!['http:', 'https:'].includes(modelUrl.protocol) || modelUrl.username || modelUrl.password) throw new Error();
   } catch { throw new Error('invalid model base URL'); }
+  try {
+    const tenantUrl = new URL(config.feishuDocument.tenantBaseUrl);
+    if (tenantUrl.protocol !== 'https:' || tenantUrl.username || tenantUrl.password || tenantUrl.port || tenantUrl.search || tenantUrl.hash || !['', '/'].includes(tenantUrl.pathname)) throw new Error();
+    config.feishuDocument.tenantBaseUrl = tenantUrl.origin;
+  } catch { throw new Error('invalid Feishu document-link origin'); }
   if (!Number.isInteger(config.model.maxOutputTokens) || config.model.maxOutputTokens < 256 || config.model.maxOutputTokens > 32768) throw new Error('model max output tokens must be an integer from 256 to 32768');
   if (!Number.isInteger(config.model.concurrency) || config.model.concurrency < 1 || config.model.concurrency > 4) throw new Error('model concurrency must be an integer from 1 to 4');
   if (!Number.isInteger(config.model.timeoutMs) || config.model.timeoutMs < 10000 || config.model.timeoutMs > 600000) throw new Error('model timeout must be an integer from 10000 to 600000 milliseconds');

@@ -121,7 +121,7 @@ test('Markdown and HTML render all bilingual report fields with escaped content'
   const report = await fixtureReport();
   report.items[0].analysis.zh.studyAction = '<script>unsafe()</script> 学习行动';
   const markdown = renderMarkdown(report), html = renderHtml(report);
-  for (const marker of ['跨条目模式', '学习行动', '反证', '不确定性', '评分标准', '答题框架', '失败与伦理检查', '供给证据']) {
+  for (const marker of ['今日地图', '学习行动', '反证', '不确定性', '评分标准', '答题框架', '失败与伦理检查', '供给证据']) {
     assert.ok(markdown.includes(marker)); assert.ok(html.includes(marker));
   }
   assert.ok(markdown.includes('&lt;script&gt;unsafe()&lt;/script&gt;'));
@@ -139,10 +139,10 @@ test('dashboard HTML has a continuous heading outline and retains interactive mo
   for (let index = 1; index < headingLevels.length; index++) {
     assert.ok(headingLevels[index] <= headingLevels[index - 1] + 1, `heading jumped from h${headingLevels[index - 1]} to h${headingLevels[index]}`);
   }
-  assert.match(html, /<section class="overview"><h2>今日概览 \/ Daily overview<\/h2>/);
+  assert.match(html, /<section class="band thesis"><h2>核心论点与证据边界 \/ Thesis and evidence boundary<\/h2>/);
   assert.match(html, /<article class="signal"[^>]*>[\s\S]*?<h3>/);
-  assert.match(html, /<section class="analysis"><h4>/);
-  assert.match(html, /<section class="provenance"><h4>[\s\S]*?<h5>Citations<\/h5>/);
+  assert.match(html, /<details class="analysis"><summary><h4>/);
+  assert.match(html, /<details class="provenance"><summary><h4>[\s\S]*?<h5>Citations<\/h5>/);
   assert.match(html, /<aside class="sidebar"><section><h2>Source health<\/h2>/);
 
   assert.equal((html.match(/data-filter=/g) || []).length, 5);
@@ -151,7 +151,7 @@ test('dashboard HTML has a continuous heading outline and retains interactive mo
   assert.match(html, /table-layout:fixed/);
   assert.match(html, /@media\(max-width:820px\)\{\.page\{grid-template-columns:1fr\}/);
   assert.match(html, /nav\{width:100%;margin:0;overflow:auto\}/);
-  assert.match(html, /\.signal-head,\.analysis-grid,\.provenance-grid,\.exercise-grid\{grid-template-columns:1fr\}/);
+  assert.match(html, /\.signal-head,\.analysis-grid,\.provenance-grid,\.exercise-grid,\.coverage-grid\{grid-template-columns:1fr\}/);
   assert.match(html, /@media\(max-width:430px\).*\.scores\{grid-template-columns:1fr\}/);
 });
 

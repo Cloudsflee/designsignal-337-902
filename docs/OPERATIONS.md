@@ -8,13 +8,33 @@ Set `DESIGNSIGNAL_MODEL_CONCURRENCY` to an integer from 1 through 4 (default 2),
 
 For a native CLI process, `DESIGNSIGNAL_STUDY_PROFILE_FILE` may point to a protected JSON file containing the profile schema described under Docker below. Keep the profile outside version control. Feedback is appended with mode `0600` to `data/feedback.ndjson`; invalid dates, score ranges, minutes, oversized notes, and excessive weak-point lists are rejected with HTTP 400.
 
-Missing webhook endpoints are normal: the report remains published and each generic/Feishu/WeCom delivery stays pending with `missing-secret-or-endpoint`. Add the endpoint to the environment and run `node src/cli.mjs push retry`. Failures use capped exponential retry timestamps and never store the endpoint or secret in job files.
+Missing Feishu configuration is normal: the report remains published and its document delivery stays pending with `missing-feishu-document-config`. Add all three required values to the environment and run `node src/cli.mjs push retry`. Definite API rejections and tenant-token failures use capped exponential backoff. In-flight create/write jobs and ambiguous side-effecting requests stop as `reconciliation-required` because creating a second document or duplicating root blocks would be unsafe.
+
+## Feishu document delivery
+
+Create a self-built Feishu tenant application and enable tenant access-token authentication. Grant `docx:document:create` for document creation and `docx:document` for root-block writes (or the tenant's current least-privilege equivalents). Grant only the Drive access required for the destination, then add the application as a collaborator on that folder according to the tenant's security policy. Avoid broad `drive:drive` access unless the tenant cannot authorize the folder more narrowly. Verify the permission set in a non-production folder first.
+
+Configure delivery only through the process environment:
+
+```sh
+export FEISHU_APP_ID='your-app-id'
+read -rs FEISHU_APP_SECRET && export FEISHU_APP_SECRET
+read -rs FEISHU_DOC_FOLDER_TOKEN && export FEISHU_DOC_FOLDER_TOKEN
+# Optional tenant document-link origin (never an API override):
+export FEISHU_TENANT_BASE_URL='https://feishu.cn'
+```
+
+Authentication, Docx creation, and block-write requests always use `https://open.feishu.cn`. `FEISHU_TENANT_BASE_URL` is used only to construct the delivered document link; it defaults to `https://feishu.cn` and cannot redirect API traffic.
+
+The sender obtains a tenant token in memory, persists `creating` before the create request, and atomically stores the returned document ID and revision as `created` before attempting any block write. It appends root children in order using the official 1..50 child limit. Before every chunk it persists `writing`, the insertion cursor, revision, size, and a deterministic non-secret client token, then sends that same revision and token. A successful response atomically advances the confirmed cursor and revision. Confirmed chunks resume at the next cursor; an interrupted or ambiguous in-flight chunk stops for reconciliation, preventing duplication or reordering. Job files contain no request body, credential, tenant access token, folder token, or API origin. They retain report identity, safe document/progress metadata, and the SHA-256 render fingerprint. Delivered jobs returned by the CLI and `/api/outbox` include the safe tenant document URL.
+
+A `created` job can resume at its stored confirmed cursor without recreating the document or resending earlier chunks. Tenant-token timeout and HTTP 5xx failures back off because token acquisition has no document side effect. Create/write timeout, HTTP 5xx, malformed success, and interrupted in-flight states require reconciliation. Do not manually change `creating`, `writing`, or `reconciliation-required` to pending. First inspect the Feishu folder/document and reconcile whether the create or write took effect. Preserve the job as incident evidence; after confirming the exact external state, use a separately reviewed manual recovery procedure. Automatic recovery only creates the missing v1 `feishu-document` job identity and never modifies legacy outbox jobs.
 
 The local scheduler computes the next 23:50 in `Asia/Shanghai` with `Intl`, so host timezone does not matter. It catches failed daily runs and schedules the next day. Use an external service supervisor for process crashes or host restarts.
 
 ## GitHub Actions
 
-The workflow uses `50 15 * * *` because 15:50 UTC is 23:50 Shanghai. GitHub explicitly does not guarantee exact cron start times; congestion can delay a hosted run. Manual dispatch is available. Per-date concurrency prevents overlapping runs, and report/outbox artifacts are retained for 30 days. Configure `OPENAI_MODEL`, `OPENAI_API_KEY`, optional `OPENAI_BASE_URL`, and webhook URLs as Actions secrets/variables.
+The workflow uses `50 15 * * *` because 15:50 UTC is 23:50 Shanghai. GitHub explicitly does not guarantee exact cron start times; congestion can delay a hosted run. Manual dispatch is available. Per-date concurrency prevents overlapping runs, and report/outbox artifacts are retained for 30 days. Configure `OPENAI_MODEL`, `OPENAI_API_KEY`, optional `OPENAI_BASE_URL`, the three required Feishu app/folder values, and optional `FEISHU_TENANT_BASE_URL` as Actions secrets/variables when that runner performs delivery.
 
 ## Docker
 
@@ -173,7 +193,7 @@ docker compose run --rm --no-deps --volume "${BackupDir}:/backup:ro" dashboard t
 docker compose up --detach
 ```
 
-Supply `OPENALEX_*`, optional RSSHub feeds, and webhook values through the process environment or a local untracked `.env`. Do not bake credentials into the image or commit `.env`.
+Supply `OPENALEX_*`, optional RSSHub feeds, and Feishu document values through the process environment or a local untracked `.env`. Do not bake credentials into the image or commit `.env`. Base Compose passes Feishu values only to the scheduler; the dashboard never receives them.
 
 ## Windows Task Scheduler
 
@@ -188,4 +208,4 @@ Register-ScheduledTask -TaskName "DesignSignal Daily" -Action $action -Trigger $
 
 ## Recovery
 
-An existing dated report makes a rerun idempotently return `exists`. Recovery accepts immutable schema v2 reports under their legacy audit contract as well as schema v3 reports with the complete priority-institution audit; it never upgrades or rewrites a report, and manifest reconciliation uses the exact stored JSON bytes. A stale lock indicates an interrupted process; confirm no daily process is running, preserve the lock for incident evidence, then remove only that date’s lock and rerun. If a report directory exists without a manifest entry, inspect its three files and hashes before manually appending a recovery record. Never overwrite an existing report silently.
+An existing dated report makes a rerun idempotently return `exists`. Recovery accepts immutable schema v2 reports under their legacy audit contract and schema v3 reports with the complete priority-institution audit; it never upgrades or rewrites them, and manifest reconciliation uses the exact stored JSON bytes. New writes are schema v4. Recovery queues only a missing v1 Feishu document identity and leaves every legacy outbox file byte-for-byte untouched. A stale lock indicates an interrupted process; confirm no daily process is running, preserve the lock for incident evidence, then remove only that date’s lock and rerun. If a report directory exists without a manifest entry, inspect its three files and hashes before manually appending a recovery record. Never overwrite an existing report silently.

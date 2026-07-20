@@ -6,6 +6,7 @@ import { renderHtml } from './render.mjs';
 import { json, sha256 } from './util.mjs';
 import { loadExamEvidence } from './evidence.mjs';
 import { appendFeedback, validateFeedback } from './study.mjs';
+import { exposeDeliveryJob } from './push.mjs';
 
 const APP_JS = `document.querySelectorAll('[data-filter]').forEach(b=>b.onclick=()=>{document.querySelectorAll('[data-filter]').forEach(x=>x.setAttribute('aria-pressed',String(x===b)));document.querySelectorAll('.signal').forEach(x=>x.classList.toggle('hidden',b.dataset.filter!=='all'&&x.dataset.category!==b.dataset.filter))})`;
 const headers = {
@@ -49,7 +50,7 @@ export async function handleDashboardRequest(config, req, res) {
       if (req.method === 'GET' && url.pathname === '/api/report') { const report = await latestReport(config.dataDir); return json(res, report ? 200 : 404, report || { error: 'no report' }); }
       if (req.method === 'GET' && url.pathname === '/api/evidence') return json(res, 200, await loadExamEvidence());
       if (req.method === 'GET' && url.pathname === '/api/source-health') { const report = await latestReport(config.dataDir); return json(res, report ? 200 : 404, report?.audit.sourceHealth || { error: 'no report' }); }
-      if (req.method === 'GET' && url.pathname === '/api/outbox') { let files = []; try { files = await readdir(path.join(config.dataDir, 'outbox')); } catch {} const jobs = await Promise.all(files.filter(x => x.endsWith('.json')).map(x => readFile(path.join(config.dataDir, 'outbox', x), 'utf8').then(JSON.parse))); return json(res, 200, jobs.map(({ payload, ...job }) => job)); }
+      if (req.method === 'GET' && url.pathname === '/api/outbox') { let files = []; try { files = await readdir(path.join(config.dataDir, 'outbox')); } catch {} const jobs = await Promise.all(files.filter(x => x.endsWith('.json')).map(x => readFile(path.join(config.dataDir, 'outbox', x), 'utf8').then(JSON.parse))); return json(res, 200, jobs.map(({ payload, ...job }) => exposeDeliveryJob(job, config))); }
       if (req.method === 'POST' && url.pathname === '/api/feedback') {
         const raw = await body(req, 8192);
         let input;

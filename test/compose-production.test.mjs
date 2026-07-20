@@ -6,6 +6,7 @@ const normalizeLineEndings = value => value.replaceAll('\r\n', '\n');
 const compose = normalizeLineEndings(await readFile(new URL('../compose.yaml', import.meta.url), 'utf8'));
 const studyProfileCompose = normalizeLineEndings(await readFile(new URL('../compose.study-profile.yaml', import.meta.url), 'utf8'));
 const envExample = normalizeLineEndings(await readFile(new URL('../.env.example', import.meta.url), 'utf8'));
+const workflow = normalizeLineEndings(await readFile(new URL('../.github/workflows/daily.yml', import.meta.url), 'utf8'));
 
 function serviceBlock(name, nextSection) {
   const end = nextSection ? `(?=^  ${nextSection}:)` : '(?=^volumes:)';
@@ -60,6 +61,22 @@ test('Compose leaves OpenAI selection unset and passes optional source settings 
     'DESIGNSIGNAL_RSSHUB_ZHIHU_FEEDS'
   ]) assert.match(scheduler, new RegExp(`^      ${name}:$`, 'm'), `${name} must be a host passthrough`);
   assert.doesNotMatch(compose, /api\.openai\.com|sk-[A-Za-z0-9_-]+|OPENAI_(?:BASE_URL|MODEL|API_KEY):[ \t]+\S/);
+});
+
+test('Compose passes Feishu document configuration only to the scheduler', () => {
+  for (const name of ['FEISHU_APP_ID', 'FEISHU_APP_SECRET', 'FEISHU_DOC_FOLDER_TOKEN']) {
+    assert.match(scheduler, new RegExp(`^      ${name}:$`, 'm'));
+    assert.doesNotMatch(dashboard, new RegExp(name));
+  }
+  assert.match(scheduler, /^      FEISHU_TENANT_BASE_URL: \$\{FEISHU_TENANT_BASE_URL:-https:\/\/feishu\.cn\}$/m);
+  assert.doesNotMatch(dashboard, /FEISHU_TENANT_BASE_URL/);
+  assert.doesNotMatch(compose, /FEISHU_WEBHOOK_URL|DESIGNSIGNAL_WEBHOOK_URL|WECOM_WEBHOOK_URL/);
+});
+
+test('GitHub Actions passes the four Feishu document settings without stale webhooks', () => {
+  for (const name of ['FEISHU_APP_ID', 'FEISHU_APP_SECRET', 'FEISHU_DOC_FOLDER_TOKEN', 'FEISHU_TENANT_BASE_URL']) assert.match(workflow, new RegExp(`^          ${name}:`, 'm'));
+  assert.match(workflow, /FEISHU_TENANT_BASE_URL:[^\n]*https:\/\/feishu\.cn/);
+  assert.doesNotMatch(workflow, /FEISHU_WEBHOOK_URL|DESIGNSIGNAL_WEBHOOK_URL|WECOM_WEBHOOK_URL/);
 });
 
 test('Compose fixes identities, shares one image and data volume, and publishes locally', () => {
