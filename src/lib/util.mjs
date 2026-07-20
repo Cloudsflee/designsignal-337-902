@@ -1,6 +1,6 @@
-import { createHash } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { execFile } from 'node:child_process';
-import { link, lstat, mkdir, readFile, rename, open, rm } from 'node:fs/promises';
+import { link, lstat, mkdir, opendir, readFile, rename, open, rm } from 'node:fs/promises';
 import { performance } from 'node:perf_hooks';
 import path from 'node:path';
 
@@ -10,7 +10,11 @@ const RENAME_MAX_ELAPSED_MS = 2200;
 const RENAME_MAX_DELAY_MS = 100;
 const POWERSHELL_TIMEOUT_MS = 1500;
 const POWERSHELL_MAX_BUFFER = 4096;
-const POWERSHELL_REPLACE_COMMAND = 'param([string]$Source,[string]$Destination); [System.IO.File]::Replace($Source,$Destination,$null)';
+const POWERSHELL_REPLACE_COMMAND = '[System.IO.File]::Replace($env:DESIGNSIGNAL_ATOMIC_SOURCE,$env:DESIGNSIGNAL_ATOMIC_DESTINATION,$env:DESIGNSIGNAL_ATOMIC_BACKUP)';
+const REPLACE_BACKUP_MARKER = '.designsignal-replace-backup.';
+const REPLACE_BACKUP_MIN_AGE_MS = 60 * 60 * 1000;
+const REPLACE_BACKUP_MAX_INSPECTED = 256;
+const REPLACE_BACKUP_MAX_REMOVED = 16;
 
 export const sha256 = value => createHash('sha256').update(value).digest('hex');
 export const isoDate = (date = new Date(), timeZone = 'Asia/Shanghai') => {
@@ -32,30 +36,82 @@ export const parseArgs = args => {
   return out;
 };
 export async function readJson(file) { return JSON.parse(await readFile(file, 'utf8')); }
+
+async function cleanupStaleReplaceBackups(destination, { now = Date.now(), openDirImpl = opendir, statImpl = lstat, rmImpl = rm } = {}) {
+  const directory = path.dirname(destination);
+  const prefix = `${path.basename(destination)}${REPLACE_BACKUP_MARKER}`;
+  const suffixPattern = /^(\d+)\.(\d{10,16})\.([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$/i;
+  let dir;
+  try { dir = await openDirImpl(directory); }
+  catch { return; }
+  let inspected = 0, removed = 0;
+  try {
+    for await (const entry of dir) {
+      if (++inspected > REPLACE_BACKUP_MAX_INSPECTED || removed >= REPLACE_BACKUP_MAX_REMOVED) break;
+      if (!entry.name.startsWith(prefix) || entry.name.endsWith('.json')) continue;
+      const match = suffixPattern.exec(entry.name.slice(prefix.length));
+      if (!match || now - Number(match[2]) < REPLACE_BACKUP_MIN_AGE_MS) continue;
+      const backup = path.join(directory, entry.name);
+      try {
+        const metadata = await statImpl(backup);
+        if (!metadata.isSymbolicLink() && metadata.isFile()) {
+          await rmImpl(backup);
+          removed++;
+        }
+      } catch {}
+    }
+  } finally {
+    await dir.close().catch(error => { if (error.code !== 'ERR_DIR_CLOSED') throw error; });
+  }
+}
+
 export async function windowsAtomicReplace(source, destination, {
   execFileImpl = execFile,
-  systemRoot = process.env.SystemRoot
+  systemRoot = process.env.SystemRoot,
+  platform = process.platform,
+  statImpl = lstat,
+  rmImpl = rm,
+  randomUUIDImpl = randomUUID
 } = {}) {
+  if (platform !== 'win32') throw new Error('Windows atomic replacement is only available on win32');
   if (!systemRoot || !path.win32.isAbsolute(systemRoot)) throw new Error('SystemRoot is unavailable or invalid');
   const executable = path.win32.join(systemRoot, 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe');
+  const backup = `${destination}${REPLACE_BACKUP_MARKER}${process.pid}.${Date.now()}.${randomUUIDImpl()}`;
   const args = [
     '-NoLogo',
     '-NoProfile',
     '-NonInteractive',
     '-ExecutionPolicy', 'Bypass',
-    '-Command', POWERSHELL_REPLACE_COMMAND,
-    '-Source', source,
-    '-Destination', destination
+    '-Command', POWERSHELL_REPLACE_COMMAND
   ];
-  await new Promise((resolve, reject) => {
-    execFileImpl(executable, args, {
-      encoding: 'utf8',
-      maxBuffer: POWERSHELL_MAX_BUFFER,
-      shell: false,
-      timeout: POWERSHELL_TIMEOUT_MS,
-      windowsHide: true
-    }, error => error ? reject(error) : resolve());
-  });
+  await cleanupStaleReplaceBackups(destination);
+  try {
+    await new Promise((resolve, reject) => {
+      execFileImpl(executable, args, {
+        encoding: 'utf8',
+        env: {
+          SystemRoot: systemRoot,
+          DESIGNSIGNAL_ATOMIC_SOURCE: source,
+          DESIGNSIGNAL_ATOMIC_DESTINATION: destination,
+          DESIGNSIGNAL_ATOMIC_BACKUP: backup
+        },
+        maxBuffer: POWERSHELL_MAX_BUFFER,
+        shell: false,
+        timeout: POWERSHELL_TIMEOUT_MS,
+        windowsHide: true
+      }, error => error ? reject(error) : resolve());
+    });
+  } catch (error) {
+    try { await statImpl(source); }
+    catch (statError) {
+      if (statError.code === 'ENOENT') {
+        await rmImpl(backup, { force: true }).catch(() => {});
+        return;
+      }
+    }
+    throw error;
+  }
+  await rmImpl(backup, { force: true }).catch(() => {});
 }
 
 async function renameReplacement(temp, file, {
@@ -83,7 +139,7 @@ async function renameReplacement(temp, file, {
         }
         if (destination) {
           if (destination.isSymbolicLink() || !destination.isFile()) throw error;
-          try { return await replaceImpl(temp, file, { execFileImpl }); }
+          try { return await replaceImpl(temp, file, { execFileImpl, platform }); }
           catch (replaceError) { lastError = replaceError; }
         }
       }

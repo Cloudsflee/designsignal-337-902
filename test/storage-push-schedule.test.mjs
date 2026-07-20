@@ -7,7 +7,7 @@ import { fixtureCandidates } from '../fixtures/daily.mjs';
 import { selectDaily } from '../src/lib/select.mjs';
 import { buildReport } from '../src/lib/report.mjs';
 import { appendManifestEntry, readReportByDate, writeReport } from '../src/lib/storage.mjs';
-import { atomicWrite, withLock } from '../src/lib/util.mjs';
+import { atomicWrite, windowsAtomicReplace, withLock } from '../src/lib/util.mjs';
 import { queueDeliveries, retryOutbox } from '../src/lib/push.mjs';
 import { nextScheduledAt } from '../src/lib/scheduler.mjs';
 import { daily } from '../src/lib/daily.mjs';
@@ -111,9 +111,12 @@ test('atomicWrite invokes fixed hidden PowerShell arguments without file content
   const dir = await mkdtemp(path.join(os.tmpdir(), 'ds-atomic-win-exec-')), target = path.join(dir, 'target');
   await writeFile(target, 'old');
   const secretContent = ['credential', 'must', 'stay', 'in', 'file'].join('-');
+  const parentCredential = ['parent', 'credential', 'must', 'not', 'leak'].join('-');
   const originalSystemRoot = process.env.SystemRoot;
+  const originalOpenAiKey = process.env.OPENAI_API_KEY;
   let invocation;
   process.env.SystemRoot = String.raw`C:\Windows`;
+  process.env.OPENAI_API_KEY = parentCredential;
   try {
     await atomicWrite(target, secretContent, {
       platform: 'win32',
@@ -126,30 +129,120 @@ test('atomicWrite invokes fixed hidden PowerShell arguments without file content
   } finally {
     if (originalSystemRoot === undefined) delete process.env.SystemRoot;
     else process.env.SystemRoot = originalSystemRoot;
+    if (originalOpenAiKey === undefined) delete process.env.OPENAI_API_KEY;
+    else process.env.OPENAI_API_KEY = originalOpenAiKey;
   }
-  const source = invocation.args[invocation.args.indexOf('-Source') + 1];
+  const source = invocation.options.env.DESIGNSIGNAL_ATOMIC_SOURCE;
+  const backup = invocation.options.env.DESIGNSIGNAL_ATOMIC_BACKUP;
   assert.equal(invocation.executable, String.raw`C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe`);
   assert.deepEqual(invocation.args, [
     '-NoLogo',
     '-NoProfile',
     '-NonInteractive',
     '-ExecutionPolicy', 'Bypass',
-    '-Command', 'param([string]$Source,[string]$Destination); [System.IO.File]::Replace($Source,$Destination,$null)',
-    '-Source', source,
-    '-Destination', target
+    '-Command', '[System.IO.File]::Replace($env:DESIGNSIGNAL_ATOMIC_SOURCE,$env:DESIGNSIGNAL_ATOMIC_DESTINATION,$env:DESIGNSIGNAL_ATOMIC_BACKUP)'
   ]);
   assert.deepEqual(invocation.options, {
     encoding: 'utf8',
+    env: {
+      SystemRoot: String.raw`C:\Windows`,
+      DESIGNSIGNAL_ATOMIC_SOURCE: source,
+      DESIGNSIGNAL_ATOMIC_DESTINATION: target,
+      DESIGNSIGNAL_ATOMIC_BACKUP: backup
+    },
     maxBuffer: 4096,
     shell: false,
     timeout: 1500,
     windowsHide: true
   });
   assert.match(source, /\.tmp$/);
+  assert.equal(path.dirname(backup), path.dirname(target));
+  assert.match(path.basename(backup), /^target\.designsignal-replace-backup\./);
+  assert.equal(backup.endsWith('.json'), false);
   assert.equal(JSON.stringify(invocation).includes(secretContent), false);
+  assert.equal(JSON.stringify(invocation).includes(parentCredential), false);
   assert.equal(await readFile(target, 'utf8'), 'old');
   assert.deepEqual((await readdir(dir)).filter(name => name.endsWith('.tmp')), []);
   await rm(dir, { recursive: true, force: true });
+});
+
+test('windowsAtomicReplace treats consumed source as confirmed and does not require a retry', async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), 'ds-atomic-win-consumed-'));
+  const source = path.join(dir, 'source.tmp'), target = path.join(dir, 'target');
+  await writeFile(source, 'new');
+  await writeFile(target, 'old');
+  let calls = 0, backup;
+  await windowsAtomicReplace(source, target, {
+    platform: 'win32',
+    systemRoot: String.raw`C:\Windows`,
+    execFileImpl: (executable, args, options, callback) => {
+      calls++;
+      backup = options.env.DESIGNSIGNAL_ATOMIC_BACKUP;
+      rm(source).then(() => writeFile(backup, 'old')).then(() => callback(new Error('exit status unavailable')));
+    }
+  });
+  assert.equal(calls, 1);
+  assert.equal((await readdir(dir)).includes(path.basename(source)), false);
+  assert.equal((await readdir(dir)).includes(path.basename(backup)), false);
+  await rm(dir, { recursive: true, force: true });
+});
+
+test('windowsAtomicReplace leaves a fresh backup alone and safely removes it when stale', async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), 'ds-atomic-win-stale-'));
+  const source = path.join(dir, 'source.tmp'), target = path.join(dir, 'job.json');
+  await writeFile(source, 'new');
+  await writeFile(target, 'old');
+  let capturedBackup;
+  const invoke = () => windowsAtomicReplace(source, target, {
+    platform: 'win32',
+    systemRoot: String.raw`C:\Windows`,
+    execFileImpl: (executable, args, options, callback) => {
+      capturedBackup = options.env.DESIGNSIGNAL_ATOMIC_BACKUP;
+      callback(null, '', '');
+    }
+  });
+  await invoke();
+  const freshBackup = capturedBackup;
+  assert.equal(freshBackup.endsWith('.json'), false);
+  await writeFile(freshBackup, 'old');
+  await invoke();
+  assert.equal((await readdir(dir)).includes(path.basename(freshBackup)), true);
+  const [pid, , uuid] = freshBackup.slice(freshBackup.indexOf('.designsignal-replace-backup.') + '.designsignal-replace-backup.'.length).split('.');
+  const staleBackup = `${target}.designsignal-replace-backup.${pid}.${Date.now() - 2 * 60 * 60 * 1000}.${uuid}`;
+  await writeFile(staleBackup, 'old');
+  await invoke();
+  assert.equal((await readdir(dir)).includes(path.basename(staleBackup)), false);
+  await rm(dir, { recursive: true, force: true });
+});
+
+test('windowsAtomicReplace never spawns PowerShell outside win32', async () => {
+  let spawned = false;
+  await assert.rejects(() => windowsAtomicReplace('/source', '/destination', {
+    platform: 'linux',
+    systemRoot: String.raw`C:\Windows`,
+    execFileImpl: () => { spawned = true; }
+  }), /only available on win32/);
+  assert.equal(spawned, false);
+});
+
+test('windowsAtomicReplace performs a real synced replacement on Windows', { skip: process.platform !== 'win32' }, async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), 'ds-atomic-win-real-'));
+  const source = path.join(dir, 'source.tmp'), target = path.join(dir, 'target');
+  const writeSynced = async (file, content) => {
+    const handle = await open(file, 'wx', 0o600);
+    try { await handle.writeFile(content); await handle.sync(); }
+    finally { await handle.close(); }
+  };
+  try {
+    await writeSynced(source, 'new');
+    await writeSynced(target, 'old');
+    await windowsAtomicReplace(source, target);
+    assert.equal(await readFile(target, 'utf8'), 'new');
+    await assert.rejects(() => stat(source), error => error.code === 'ENOENT');
+    assert.deepEqual((await readdir(dir)).filter(name => name.includes('.designsignal-replace-backup.')), []);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
 });
 
 test('atomicWrite bounds Windows replacement failures and preserves the destination', async () => {
