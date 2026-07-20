@@ -4,9 +4,9 @@ import { performance } from 'node:perf_hooks';
 import path from 'node:path';
 
 const TRANSIENT_RENAME_CODES = new Set(['EPERM', 'EACCES', 'EBUSY']);
-const RENAME_MAX_ATTEMPTS = 5;
-const RENAME_MAX_ELAPSED_MS = 100;
-const RENAME_MAX_DELAY_MS = 25;
+const RENAME_MAX_ATTEMPTS = 25;
+const RENAME_MAX_ELAPSED_MS = 2200;
+const RENAME_MAX_DELAY_MS = 100;
 
 export const sha256 = value => createHash('sha256').update(value).digest('hex');
 export const isoDate = (date = new Date(), timeZone = 'Asia/Shanghai') => {

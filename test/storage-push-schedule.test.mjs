@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdir, mkdtemp, open, readFile, readdir, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, open, readFile, readdir, rm, stat, utimes, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { fixtureCandidates } from '../fixtures/daily.mjs';
@@ -80,8 +80,8 @@ test('atomicWrite bounds transient rename retries and preserves the destination'
     () => atomicWrite(target, 'new', { renameImpl: async () => { attempts++; throw failure; }, sleepImpl: async delay => delays.push(delay), nowImpl: () => 0 }),
     error => error === failure
   );
-  assert.equal(attempts, 5);
-  assert.deepEqual(delays, [5, 10, 20, 25]);
+  assert.equal(attempts, 25);
+  assert.deepEqual(delays, [5, 10, 20, 40, 80, ...Array(19).fill(100)]);
   assert.equal(await readFile(target, 'utf8'), 'old');
   assert.deepEqual((await readdir(dir)).filter(name => name.endsWith('.tmp')), []);
   await rm(dir, { recursive: true, force: true });
@@ -93,11 +93,12 @@ test('atomicWrite stops transient retries at the elapsed-time cap', async () => 
   let attempts = 0, now = 0;
   const failure = Object.assign(new Error('permission pending'), { code: 'EPERM' });
   await assert.rejects(() => atomicWrite(target, 'new', {
-    renameImpl: async () => { attempts++; now += 60; throw failure; },
+    renameImpl: async () => { attempts++; now += 750; throw failure; },
     sleepImpl: async delay => { now += delay; },
     nowImpl: () => now
   }), error => error === failure);
-  assert.equal(attempts, 2);
+  assert.equal(attempts, 3);
+  assert.equal(now, 2265);
   assert.equal(await readFile(target, 'utf8'), 'old');
   assert.deepEqual((await readdir(dir)).filter(name => name.endsWith('.tmp')), []);
   await rm(dir, { recursive: true, force: true });
@@ -230,6 +231,28 @@ test('push outbox retains missing secrets and retries configured webhook', async
   jobs = await Promise.all((await readdir(path.join(dir, 'outbox'))).map(x => readFile(path.join(dir, 'outbox', x), 'utf8').then(JSON.parse)));
   assert.equal(calls, 1); assert.equal(jobs.find(x => x.channel === 'generic').state, 'delivered'); assert.ok(jobs.filter(x => x.channel !== 'generic').every(x => x.state === 'pending'));
   assert.ok(jobs.every(x => !('endpoint' in x)));
+  await rm(dir, { recursive: true, force: true });
+});
+
+test('retryOutbox returns unchanged missing-endpoint jobs without rewriting them', async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), 'ds-push-no-write-')), report = await fixtureReport();
+  const config = { network: { allowHosts: [], timeoutMs: 100, retries: 0 }, push: { generic: '', feishu: '', wecom: '' } };
+  const jobs = await queueDeliveries(dir, report, config);
+  const fixedTime = new Date('2020-01-02T03:04:05.000Z');
+  const snapshots = new Map();
+  for (const job of jobs) {
+    const file = path.join(dir, 'outbox', `${job.id}.json`);
+    await utimes(file, fixedTime, fixedTime);
+    snapshots.set(job.id, { bytes: await readFile(file), mtimeMs: (await stat(file)).mtimeMs });
+  }
+
+  const results = await retryOutbox(dir, config);
+  assert.deepEqual(results.map(job => job.id).sort(), jobs.map(job => job.id).sort());
+  for (const job of jobs) {
+    const file = path.join(dir, 'outbox', `${job.id}.json`), before = snapshots.get(job.id);
+    assert.deepEqual(await readFile(file), before.bytes);
+    assert.equal((await stat(file)).mtimeMs, before.mtimeMs);
+  }
   await rm(dir, { recursive: true, force: true });
 });
 

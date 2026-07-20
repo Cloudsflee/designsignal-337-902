@@ -4,6 +4,7 @@ import { atomicWrite, sha256 } from './util.mjs';
 import { assertSafeUrl } from './network.mjs';
 
 const channels = ['generic', 'feishu', 'wecom'];
+const MISSING_ENDPOINT_REASON = 'missing-secret-or-endpoint';
 const payload = (channel, report) => {
   const text = `DesignSignal ${report.date}: ${report.items.map(x => x.title.zh).join('；')}`;
   if (channel === 'feishu') return { msg_type: 'text', content: { text } };
@@ -15,7 +16,7 @@ export async function queueDeliveries(dataDir, report, config) {
   const dir = path.join(dataDir, 'outbox'); await mkdir(dir, { recursive: true }); const jobs = [];
   for (const channel of channels) {
     const endpoint = config.push[channel];
-    const job = { id: sha256(`${report.date}:${channel}`).slice(0, 24), channel, reportDate: report.date, endpointConfigured: Boolean(endpoint), state: 'pending', reason: endpoint ? 'queued' : 'missing-secret-or-endpoint', attempts: 0, nextAttemptAt: new Date().toISOString(), createdAt: new Date().toISOString(), payload: payload(channel, report) };
+    const job = { id: sha256(`${report.date}:${channel}`).slice(0, 24), channel, reportDate: report.date, endpointConfigured: Boolean(endpoint), state: 'pending', reason: endpoint ? 'queued' : MISSING_ENDPOINT_REASON, attempts: 0, nextAttemptAt: new Date().toISOString(), createdAt: new Date().toISOString(), payload: payload(channel, report) };
     const file = path.join(dir, `${job.id}.json`);
     let stored;
     try { stored = JSON.parse(await readFile(file, 'utf8')); }
@@ -51,7 +52,15 @@ export async function retryOutbox(dataDir, config, ctx = {}) {
     const full = path.join(dir, file), job = JSON.parse(await readFile(full, 'utf8'));
     if (job.state === 'delivered' || new Date(job.nextAttemptAt) > new Date()) continue;
     const endpoint = config.push[job.channel];
-    if (!endpoint) { job.reason = 'missing-secret-or-endpoint'; await atomicWrite(full, `${JSON.stringify(job, null, 2)}\n`); results.push(job); continue; }
+    if (!endpoint) {
+      if (job.state !== 'pending' || job.reason !== MISSING_ENDPOINT_REASON) {
+        job.state = 'pending';
+        job.reason = MISSING_ENDPOINT_REASON;
+        await atomicWrite(full, `${JSON.stringify(job, null, 2)}\n`);
+      }
+      results.push(job);
+      continue;
+    }
     try { await sendJob(job, endpoint, config, ctx); job.state = 'delivered'; job.reason = ''; job.deliveredAt = new Date().toISOString(); }
     catch (error) { job.attempts++; job.reason = error.message; job.nextAttemptAt = new Date(Date.now() + Math.min(864e5, 60e3 * 2 ** Math.min(job.attempts, 10))).toISOString(); }
     await atomicWrite(full, `${JSON.stringify(job, null, 2)}\n`); results.push(job);
