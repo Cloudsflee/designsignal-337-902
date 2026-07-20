@@ -28,7 +28,7 @@ try {
     const checks = [];
     checks.push({ name: 'node', ok: Number(process.versions.node.split('.')[0]) >= 24, detail: process.versions.node });
     const evidence = await loadExamEvidence(); checks.push({ name: 'exam-evidence', ok: /^[a-f0-9]{64}$/.test(evidence.documentSha256), detail: evidence.evidenceVersion });
-    const selection = selectDaily(fixtureCandidates, { date: '2026-07-19', history: [] }); const report = await buildReport({ date: '2026-07-19', items: selection.selected, rejected: selection.rejected, health: [], selectionPolicy: selection.policy, fixture: true });
+    const selection = selectDaily(fixtureCandidates, { date: '2026-07-19', history: [], priorityInstitutionPaper: config.selection.priorityInstitutionPaper }); const report = await buildReport({ date: '2026-07-19', items: selection.selected, rejected: selection.rejected, health: [], selectionPolicy: selection.policy, fixture: true });
     checks.push({ name: 'offline-fixture', ok: report.items.length === 6, detail: `${report.items.length} validated items` });
     await mkdir(config.dataDir, { recursive: true }); await access(config.dataDir); checks.push({ name: 'data-dir', ok: true, detail: path.resolve(config.dataDir) });
     const ok = checks.every(x => x.ok); print({ ok, checks, modelConfigured: Boolean(config.model.model && config.model.token), pushConfigured: Object.fromEntries(Object.entries(config.push).map(([k, v]) => [k, Boolean(v)])) }); if (!ok) process.exitCode = 1;

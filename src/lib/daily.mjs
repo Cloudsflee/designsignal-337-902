@@ -27,7 +27,7 @@ export async function daily(config, { fixture = false, dryRun = false, date = is
   }
   const collected = fixture ? { candidates: fixtureCandidates, health: [{ sourceId: 'offline-fixture', status: 'ok', count: fixtureCandidates.length, durationMs: 0 }] } : await collectSources(config, ctx);
   const history = fixture ? [] : await readHistory(config.dataDir);
-  const { selected, rejected, policy } = selectDaily(collected.candidates, { date, history });
+  const { selected, rejected, policy } = selectDaily(collected.candidates, { date, history, priorityInstitutionPaper: config.selection.priorityInstitutionPaper });
   const persisted = !fixture && !dryRun ? await persistSelectedAssets(config, selected, ctx) : { byItem: new Map(), audit: [] };
   const items = fixture ? selected : await enrichItems(selected, config, ctx, (item, raw) => attachCachedAssets(item, persisted.byItem.get(raw.id)));
   const generated = fixture ? null : await synthesizeDaily(items, config, ctx);

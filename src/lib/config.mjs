@@ -94,6 +94,10 @@ export async function loadConfig({ configPath, env = process.env } = {}) {
   const config = {
     ...defaults, ...explicit,
     network: { ...defaults.network, ...explicit.network },
+    selection: {
+      ...defaults.selection, ...explicit.selection,
+      priorityInstitutionPaper: { ...defaults.selection?.priorityInstitutionPaper, ...explicit.selection?.priorityInstitutionPaper }
+    },
     dataDir: path.resolve(env.DESIGNSIGNAL_DATA_DIR || explicit.dataDir || path.join(ROOT, 'data')),
     host: env.DESIGNSIGNAL_HOST || explicit.host || '127.0.0.1',
     port: Number(env.DESIGNSIGNAL_PORT || explicit.port || 3379),
@@ -139,6 +143,10 @@ export async function loadConfig({ configPath, env = process.env } = {}) {
   if (!Number.isInteger(config.model.maxOutputTokens) || config.model.maxOutputTokens < 256 || config.model.maxOutputTokens > 32768) throw new Error('model max output tokens must be an integer from 256 to 32768');
   if (!Number.isInteger(config.model.concurrency) || config.model.concurrency < 1 || config.model.concurrency > 4) throw new Error('model concurrency must be an integer from 1 to 4');
   if (!Number.isInteger(config.model.timeoutMs) || config.model.timeoutMs < 10000 || config.model.timeoutMs > 600000) throw new Error('model timeout must be an integer from 10000 to 600000 milliseconds');
+  const priority = config.selection.priorityInstitutionPaper;
+  if (!Array.isArray(priority.institutionIds) || priority.institutionIds.length < 1 || priority.institutionIds.length > 20 || new Set(priority.institutionIds).size !== priority.institutionIds.length || priority.institutionIds.some(id => !/^I\d+$/.test(id))) throw new Error('selection.priorityInstitutionPaper.institutionIds must contain 1..20 unique OpenAlex institution IDs');
+  if (!Number.isInteger(priority.freshnessDays) || priority.freshnessDays < 1 || priority.freshnessDays > 30) throw new Error('selection.priorityInstitutionPaper.freshnessDays must be an integer from 1 to 30');
+  if (!Number.isFinite(priority.maxScoreGap) || priority.maxScoreGap < 0 || priority.maxScoreGap > 30) throw new Error('selection.priorityInstitutionPaper.maxScoreGap must be from 0 to 30');
   for (const [key, min, max] of [['profileMaxBytes', 1024, 1048576], ['feedbackMaxBytes', 1024, 1048576], ['recentFeedbackCount', 1, 100], ['maxDirections', 1, 50], ['maxWeaknesses', 1, 50]]) {
     if (!Number.isInteger(config.study[key]) || config.study[key] < min || config.study[key] > max) throw new Error(`invalid study.${key}`);
   }

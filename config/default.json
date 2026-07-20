@@ -13,6 +13,13 @@
     "maxDirections": 12,
     "maxWeaknesses": 12
   },
+  "selection": {
+    "priorityInstitutionPaper": {
+      "institutionIds": ["I99065089", "I76130692", "I116953780"],
+      "freshnessDays": 7,
+      "maxScoreGap": 5
+    }
+  },
   "network": {
     "timeoutMs": 12000,
     "retries": 2,

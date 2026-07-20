@@ -60,7 +60,7 @@ export async function buildReport({ date, items, rejected, health, selectionPoli
   if (!fixture && !generated) throw new Error('live report requires dynamic synthesis');
   const content = generated || offlineSynthesis(items, evidence);
   const report = {
-    schemaVersion: 2, date, generatedAt: new Date().toISOString(), fixture,
+    schemaVersion: 3, date, generatedAt: new Date().toISOString(), fixture,
     evidence: {
       version: evidence.evidenceVersion,
       hash: evidence.documentSha256,

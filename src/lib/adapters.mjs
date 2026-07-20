@@ -19,6 +19,38 @@ const normalizedLanguage = value => {
   return '';
 };
 
+const normalizedOpenAlexId = (value, prefix) => {
+  const raw = String(value || '').trim();
+  if (new RegExp(`^${prefix}\\d+$`).test(raw)) return raw;
+  try {
+    const parsed = new URL(raw);
+    if (!['http:', 'https:'].includes(parsed.protocol) || parsed.hostname.toLowerCase() !== 'openalex.org' || parsed.username || parsed.password || parsed.search || parsed.hash) return '';
+    const id = parsed.pathname.replace(/^\/+|\/+$/g, '');
+    return new RegExp(`^${prefix}\\d+$`).test(id) ? id : '';
+  } catch { return ''; }
+};
+
+const openAlexInstitutionProvenance = (work, configuredIds = []) => {
+  const priorityIds = new Set(configuredIds);
+  const affiliations = [];
+  for (const [authorshipIndex, authorship] of (Array.isArray(work.authorships) ? work.authorships : []).entries()) {
+    const authorId = normalizedOpenAlexId(authorship?.author?.id, 'A');
+    const authorName = String(authorship?.author?.display_name || '').trim();
+    for (const [institutionIndex, institution] of (Array.isArray(authorship?.institutions) ? authorship.institutions : []).entries()) {
+      const institutionId = normalizedOpenAlexId(institution?.id, 'I');
+      if (!institutionId) continue;
+      affiliations.push({ institutionId, institutionName: String(institution?.display_name || '').trim(), authorId, authorName, authorshipIndex, institutionIndex });
+    }
+  }
+  const matchedInstitutions = [];
+  for (const affiliation of affiliations) {
+    if (!priorityIds.has(affiliation.institutionId) || matchedInstitutions.some(entry => entry.id === affiliation.institutionId)) continue;
+    if (!affiliation.institutionName) continue;
+    matchedInstitutions.push({ id: affiliation.institutionId, name: affiliation.institutionName });
+  }
+  return { adapter: 'openalex', method: 'authorship-institution-id', affiliations, matchedInstitutions };
+};
+
 export function candidateLanguage({ declared, title = '', summary = '', configuredLocale = '', allowConfiguredFallback = false } = {}) {
   const explicit = normalizedLanguage(declared);
   if (explicit) return { locale: explicit, provenance: { method: 'declared', value: explicit } };
@@ -66,11 +98,13 @@ export async function openAlexAdapter(source, config, ctx = {}) {
     const title = work.title || work.display_name;
     const summary = work.abstract_inverted_index ? Object.entries(work.abstract_inverted_index).flatMap(([word, positions]) => positions.map(pos => [pos, word])).sort((a, b) => a[0] - b[0]).map(x => x[1]).join(' ').slice(0, 1500) : '';
     const language = candidateLanguage({ declared: work.language, title, summary });
+    const institutionProvenance = openAlexInstitutionProvenance(work, config.selection?.priorityInstitutionPaper?.institutionIds);
+    const primaryInstitution = institutionProvenance.matchedInstitutions[0]?.name || institutionProvenance.affiliations[0]?.institutionName || '';
     return raw(source, {
       url: work.primary_location?.landing_page_url || work.id, title, summary,
       locale: language.locale, languageProvenance: language.provenance,
       publishedAt: work.publication_date, authors: (work.authorships || []).slice(0, 20).map(x => x.author?.display_name).filter(Boolean),
-      institution: work.authorships?.[0]?.institutions?.[0]?.display_name || '', doi: work.doi || '',
+      institution: primaryInstitution, institutionProvenance, doi: work.doi || '',
       oaPdf: work.open_access?.is_oa && work.best_oa_location?.pdf_url ? work.best_oa_location.pdf_url : '',
       rights: { access: work.open_access?.is_oa ? 'open-access' : 'metadata-only', licenseStatus: work.best_oa_location?.license || 'unknown' }
     });

@@ -30,6 +30,111 @@ const exactSubset = (values, allowed, name, { min = 1 } = {}) => {
   for (const value of values) if (!allowed.has(value)) throw new Error(`${name} contains an invented reference`);
 };
 
+const integer = (value, name, { min = 0, max = Number.MAX_SAFE_INTEGER } = {}) => {
+  if (!Number.isSafeInteger(value) || value < min || value > max) throw new Error(`${name} must be an integer from ${min} to ${max}`);
+};
+
+function validateSelectionPolicy(policy, items, rejected) {
+  if (!policy || typeof policy !== 'object' || Array.isArray(policy)) throw new Error('audit.selectionPolicy required');
+  const expectedQuota = { paper: 2, product: 1, ui: 1, frontier: 2 };
+  if (JSON.stringify(policy.quota) !== JSON.stringify(expectedQuota)) throw new Error('selectionPolicy quota is invalid');
+  integer(policy.maxAgeDays, 'selectionPolicy.maxAgeDays', { min: 1, max: 365 });
+  text(policy.deterministicTieBreak, 'selectionPolicy.deterministicTieBreak', 200);
+  const actualSources = new Set(items.map(item => item.source.id)).size;
+  if (policy.sourceCount !== actualSources) throw new Error('selectionPolicy sourceCount does not match selected items');
+  if (JSON.stringify(policy.originLanguage?.required) !== JSON.stringify(['zh', 'en'])) throw new Error('selectionPolicy originLanguage.required is invalid');
+  for (const locale of ['zh', 'en']) {
+    const actual = items.filter(item => item.source.locale === locale).length;
+    if (policy.originLanguage?.selected?.[locale] !== actual) throw new Error(`selectionPolicy originLanguage.selected.${locale} does not match selected items`);
+  }
+  if (!Array.isArray(policy.originLanguage?.decisions) || policy.originLanguage.decisions.length !== 2) throw new Error('selectionPolicy originLanguage.decisions must contain zh and en');
+  const decisionLocales = new Set();
+  for (const decision of policy.originLanguage.decisions) {
+    if (!['zh', 'en'].includes(decision?.locale) || decisionLocales.has(decision.locale)) throw new Error('selectionPolicy originLanguage decisions must uniquely cover zh and en');
+    decisionLocales.add(decision.locale);
+    if (!['satisfied-by-rank', 'quota-preserving-replacement', 'maintained-after-priority-replacement'].includes(decision.decision)) throw new Error('invalid origin-language decision');
+    if (!items.some(item => item.id === decision.itemId && item.source.locale === decision.locale)) throw new Error('origin-language decision item does not match selected items');
+  }
+
+  const priority = policy.priorityInstitutionPaper;
+  if (!priority || typeof priority !== 'object' || Array.isArray(priority)) throw new Error('selectionPolicy.priorityInstitutionPaper required');
+  if (!Array.isArray(priority.configuredInstitutionIds) || priority.configuredInstitutionIds.length < 1 || priority.configuredInstitutionIds.length > 20 || new Set(priority.configuredInstitutionIds).size !== priority.configuredInstitutionIds.length || priority.configuredInstitutionIds.some(id => !/^I\d+$/.test(id))) throw new Error('invalid configured priority institution IDs');
+  integer(priority.freshnessDays, 'priorityInstitutionPaper.freshnessDays', { min: 1, max: 30 });
+  if (!Number.isFinite(priority.maxScoreGap) || priority.maxScoreGap < 0 || priority.maxScoreGap > 30) throw new Error('priorityInstitutionPaper.maxScoreGap must be 0..30');
+  for (const field of ['matchedCount', 'validatedCount', 'freshCount', 'eligibleCount']) integer(priority[field], `priorityInstitutionPaper.${field}`, { max: 100000 });
+  if (priority.validatedCount > priority.matchedCount || priority.freshCount > priority.validatedCount || priority.eligibleCount > priority.freshCount) throw new Error('priorityInstitutionPaper eligibility counts are inconsistent');
+  if (!priority.ineligibleReasons || typeof priority.ineligibleReasons !== 'object' || Array.isArray(priority.ineligibleReasons)) throw new Error('priorityInstitutionPaper.ineligibleReasons must be an object');
+  for (const [reason, count] of Object.entries(priority.ineligibleReasons)) { text(reason, 'priorityInstitutionPaper.ineligibleReasons key', 200); integer(count, `priorityInstitutionPaper.ineligibleReasons.${reason}`, { min: 1, max: 100000 }); }
+  if (!['satisfied-by-rank', 'quota-preserving-replacement', 'fallback'].includes(priority.decision)) throw new Error('invalid priorityInstitutionPaper decision');
+  text(priority.reason, 'priorityInstitutionPaper.reason', 200);
+  if (priority.decision === 'satisfied-by-rank' && priority.reason !== 'best-eligible-priority-paper-already-selected') throw new Error('rank-satisfied priority reason is inconsistent');
+  if (priority.decision === 'quota-preserving-replacement' && priority.reason !== 'best-eligible-priority-paper-selected') throw new Error('priority replacement reason is inconsistent');
+  if (priority.decision === 'fallback') {
+    const reasonValid = priority.reason === 'no-matching-priority-provenance'
+      || priority.reason === 'all-priority-candidates-deduplicated'
+      || priority.reason === 'no-valid-priority-candidate'
+      || priority.reason === 'outside-strict-freshness-window'
+      || priority.reason === 'score-gap-exceeds-limit'
+      || priority.reason === 'no-safe-replacement'
+      || /^all-priority-candidates-(?:unsupported-category|missing-provenance|invalid-source-url|invalid-published-at|future-dated|stale|missing-origin-language|missing-image|duplicate-candidate)$/.test(priority.reason);
+    if (!reasonValid) throw new Error('invalid priority fallback reason');
+    if (priority.reason === 'no-matching-priority-provenance' && priority.matchedCount !== 0) throw new Error('priority fallback reason conflicts with matchedCount');
+    if (priority.reason === 'outside-strict-freshness-window' && (priority.validatedCount < 1 || priority.freshCount !== 0)) throw new Error('priority freshness fallback counts are inconsistent');
+    if (priority.reason === 'score-gap-exceeds-limit' && (priority.freshCount < 1 || priority.eligibleCount !== 0)) throw new Error('priority quality fallback counts are inconsistent');
+    if (priority.reason === 'no-safe-replacement' && priority.eligibleCount < 1) throw new Error('priority no-safe-replacement fallback requires an eligible candidate');
+  }
+
+  const selectedIds = new Set(items.map(item => item.id));
+  if (priority.decision === 'fallback') {
+    if (priority.selectedItemId !== null || priority.selectedSourceId !== null || priority.selectedInstitution !== null || priority.replacement !== null) throw new Error('fallback priority decision must not identify a selected paper or replacement');
+  } else {
+    text(priority.selectedItemId, 'priorityInstitutionPaper.selectedItemId', 300);
+    text(priority.selectedSourceId, 'priorityInstitutionPaper.selectedSourceId', 300);
+    const selected = items.find(item => item.id === priority.selectedItemId);
+    if (!selected || selected.category !== 'paper' || selected.source.id !== priority.selectedSourceId) throw new Error('priority selected paper is inconsistent with report items');
+    text(priority.selectedInstitution?.id, 'priorityInstitutionPaper.selectedInstitution.id', 50);
+    text(priority.selectedInstitution?.name, 'priorityInstitutionPaper.selectedInstitution.name', 500);
+    if (!priority.configuredInstitutionIds.includes(priority.selectedInstitution.id)) throw new Error('priority selected institution is not configured');
+    if (!selected.institutionProvenance?.matchedInstitutions?.some(institution => institution.id === priority.selectedInstitution.id && institution.name === priority.selectedInstitution.name)) throw new Error('priority selected institution is inconsistent with item provenance');
+    if (priority.eligibleCount < 1) throw new Error('selected priority paper must be eligible');
+    if (priority.decision === 'satisfied-by-rank' && priority.replacement !== null) throw new Error('rank-satisfied priority decision cannot contain replacement');
+    if (priority.decision === 'quota-preserving-replacement') {
+      text(priority.replacement?.replacedItemId, 'priorityInstitutionPaper.replacement.replacedItemId', 300);
+      text(priority.replacement?.replacedSourceId, 'priorityInstitutionPaper.replacement.replacedSourceId', 300);
+      if (selectedIds.has(priority.replacement.replacedItemId)) throw new Error('priority replacement still appears in selected items');
+      if (!rejected.some(entry => entry.id === priority.replacement.replacedItemId && entry.sourceId === priority.replacement.replacedSourceId && entry.reason === 'priority-institution-replacement')) throw new Error('priority replacement is not consistently audited as rejected');
+    }
+  }
+
+  if (!Array.isArray(rejected)) throw new Error('audit.rejected must be an array');
+  const rejectedKeys = new Set();
+  for (const entry of rejected) {
+    text(entry.id, 'audit.rejected.id', 300); text(entry.sourceId, 'audit.rejected.sourceId', 300); text(entry.reason, 'audit.rejected.reason', 200);
+    const key = `${entry.id}\0${entry.sourceId}`;
+    if (rejectedKeys.has(key)) throw new Error('audit.rejected contains ambiguous duplicate records');
+    rejectedKeys.add(key);
+    if (selectedIds.has(entry.id) && entry.reason !== 'duplicate-candidate') throw new Error('selected item is also recorded as rejected');
+  }
+}
+
+function validateInstitutionProvenance(provenance) {
+  if (!provenance || provenance.adapter !== 'openalex' || provenance.method !== 'authorship-institution-id') throw new Error('invalid institutionProvenance identity');
+  if (!Array.isArray(provenance.affiliations) || provenance.affiliations.length > 5000 || !Array.isArray(provenance.matchedInstitutions) || provenance.matchedInstitutions.length > 20) throw new Error('invalid institutionProvenance collections');
+  for (const affiliation of provenance.affiliations) {
+    if (!/^I\d+$/.test(affiliation?.institutionId || '') || !Number.isSafeInteger(affiliation.authorshipIndex) || affiliation.authorshipIndex < 0 || !Number.isSafeInteger(affiliation.institutionIndex) || affiliation.institutionIndex < 0) throw new Error('invalid normalized OpenAlex affiliation');
+    if (affiliation.institutionName) text(affiliation.institutionName, 'institutionProvenance.affiliation.institutionName', 500);
+    if (affiliation.authorId && !/^A\d+$/.test(affiliation.authorId)) throw new Error('invalid normalized OpenAlex author ID');
+    if (affiliation.authorName) text(affiliation.authorName, 'institutionProvenance.affiliation.authorName', 500);
+  }
+  const matchedIds = new Set();
+  for (const institution of provenance.matchedInstitutions) {
+    if (!/^I\d+$/.test(institution?.id || '') || matchedIds.has(institution.id)) throw new Error('invalid matched OpenAlex institution ID');
+    text(institution.name, 'institutionProvenance.matchedInstitution.name', 500);
+    if (!provenance.affiliations.some(affiliation => affiliation.institutionId === institution.id && affiliation.institutionName === institution.name)) throw new Error('matched institution is missing from normalized affiliations');
+    matchedIds.add(institution.id);
+  }
+}
+
 export function validateItem(item) {
   text(item.id, 'id', 300);
   if (!categories.has(item.category)) throw new Error(`invalid category for ${item.id}`);
@@ -50,6 +155,10 @@ export function validateItem(item) {
   }
   if (item.rights) {
     for (const field of ['access', 'licenseStatus']) text(item.rights[field], `rights.${field}`, 500);
+  }
+  if (item.institutionProvenance) {
+    if (item.institution) text(item.institution, 'institution', 500);
+    validateInstitutionProvenance(item.institutionProvenance);
   }
   for (const asset of item.assets || []) {
     if (!['article', 'pdf', 'image'].includes(asset.kind) || !/^[a-f0-9]{64}$/.test(asset.hash || '') || !Number.isSafeInteger(asset.bytes) || asset.bytes <= 0) throw new Error('invalid cached asset identity');
@@ -111,6 +220,7 @@ export function validateSynthesis(value, items, evidence) {
 }
 
 export function validateReport(report) {
+  if (report.schemaVersion !== 3) throw new Error('unsupported report schema version');
   if (!/^\d{4}-\d{2}-\d{2}$/.test(report.date)) throw new Error('invalid report date');
   if (!Array.isArray(report.items) || report.items.length !== 6) throw new Error('report must contain exactly six items');
   report.items.forEach(validateItem);
@@ -124,6 +234,7 @@ export function validateReport(report) {
   if (new Set(report.items.map(item => item.source.id)).size < 4) throw new Error('report requires at least four distinct sources');
   const locales = new Set(report.items.map(item => item.source.locale));
   if (!locales.has('zh') || !locales.has('en')) throw new Error('report requires zh-origin and en-origin sources');
+  validateSelectionPolicy(report.audit?.selectionPolicy, report.items, report.audit?.rejected);
   const evidenceShape = {
     sources: report.evidence.sources,
     exam337: { parts: [{ topics: report.evidence.allowedTopics?.['337'] || [] }] },

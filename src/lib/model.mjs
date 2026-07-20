@@ -170,7 +170,8 @@ export async function enrichItem(raw, config, ctx = {}) {
         source: raw.source, publishedAt: raw.publishedAt, retrievedAt: new Date().toISOString(),
         analysis: output.analysis, exam: output.exam,
         citations: [{ label: 'Primary source', url: raw.source.url }], confidence: output.confidence,
-        rights: raw.rights
+        rights: raw.rights,
+        ...(raw.institutionProvenance ? { institution: raw.institution, institutionProvenance: raw.institutionProvenance } : {})
       };
       const imageUrl = raw.imageUrl || raw.image?.url;
       if (imageUrl) item.image = { url: imageUrl, remoteUrl: imageUrl, mime: 'image/unknown', hash: 'remote-unfetched', author: raw.authors?.join(', ') || raw.image?.author || raw.source.name, institution: raw.institution || raw.image?.institution || raw.source.name, accessStatus: 'remote-link', licenseStatus: raw.rights?.licenseStatus || raw.image?.licenseStatus || 'unknown' };
