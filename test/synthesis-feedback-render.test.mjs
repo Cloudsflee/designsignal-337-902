@@ -129,3 +129,51 @@ test('Markdown and HTML render all bilingual report fields with escaped content'
   assert.ok(!html.includes('<script>unsafe()</script>'));
   assert.equal(report.exercise.rubric.reduce((total, row) => total + row.points, 0), 100);
 });
+
+test('dashboard HTML has a continuous heading outline and retains interactive mobile-safe structure', async () => {
+  const html = renderHtml(await fixtureReport());
+  const headingLevels = [...html.matchAll(/<h([1-6])(?:\s[^>]*)?>/g)].map(match => Number(match[1]));
+  assert.equal(headingLevels[0], 1);
+  assert.equal(headingLevels.filter(level => level === 1).length, 1);
+  assert.match(html, /<h1 class="brand">DesignSignal 337\/902<\/h1>/);
+  for (let index = 1; index < headingLevels.length; index++) {
+    assert.ok(headingLevels[index] <= headingLevels[index - 1] + 1, `heading jumped from h${headingLevels[index - 1]} to h${headingLevels[index]}`);
+  }
+  assert.match(html, /<section class="overview"><h2>今日概览 \/ Daily overview<\/h2>/);
+  assert.match(html, /<article class="signal"[^>]*>[\s\S]*?<h3>/);
+  assert.match(html, /<section class="analysis"><h4>/);
+  assert.match(html, /<section class="provenance"><h4>[\s\S]*?<h5>Citations<\/h5>/);
+  assert.match(html, /<aside class="sidebar"><section><h2>Source health<\/h2>/);
+
+  assert.equal((html.match(/data-filter=/g) || []).length, 5);
+  assert.match(html, /<form method="post" action="\/api\/feedback">/);
+  for (const name of ['date', 'comprehension', 'transfer', 'exercise', 'minutes', 'weakPoints', 'note']) assert.match(html, new RegExp(`name="${name}"`));
+  assert.match(html, /table-layout:fixed/);
+  assert.match(html, /@media\(max-width:820px\)\{\.page\{grid-template-columns:1fr\}/);
+  assert.match(html, /nav\{width:100%;margin:0;overflow:auto\}/);
+  assert.match(html, /\.signal-head,\.analysis-grid,\.provenance-grid,\.exercise-grid\{grid-template-columns:1fr\}/);
+  assert.match(html, /@media\(max-width:430px\).*\.scores\{grid-template-columns:1fr\}/);
+});
+
+test('every evidence image has escaped bilingual alt text and prefers its local cached asset', async () => {
+  const report = await fixtureReport();
+  const imageItems = report.items.filter(item => item.image);
+  const third = report.items.find(item => item.category === 'frontier');
+  third.image = { ...structuredClone(imageItems[0].image), url: 'https://remote.example/frontier.jpg' };
+  imageItems.push(third);
+
+  imageItems.forEach((item, index) => {
+    item.title = { zh: `证据图 ${index + 1} <模块>`, en: `Evidence image ${index + 1} "interface" & system` };
+    item.image.localCacheRef = `/assets/${String(index + 1).repeat(64)}`;
+  });
+  const html = renderHtml(report);
+  const images = [...html.matchAll(/<img\s[^>]+>/g)].map(match => match[0]);
+  assert.equal(images.length, 3);
+  images.forEach((image, index) => {
+    assert.match(image, new RegExp(`src="/assets/${String(index + 1).repeat(64)}"`));
+    assert.ok(image.includes(`alt="证据图 ${index + 1} &lt;模块&gt; / Evidence image ${index + 1} &quot;interface&quot; &amp; system"`));
+    assert.match(image, /width="180" height="135" loading="lazy" referrerpolicy="no-referrer"/);
+    assert.doesNotMatch(image.match(/alt="([^"]*)"/)[1], /https?:/);
+    assert.ok(!image.includes('remote.example'));
+  });
+});
