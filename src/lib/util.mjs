@@ -1,5 +1,6 @@
 import { createHash } from 'node:crypto';
-import { link, mkdir, readFile, rename, open, rm } from 'node:fs/promises';
+import { execFile } from 'node:child_process';
+import { link, lstat, mkdir, readFile, rename, open, rm } from 'node:fs/promises';
 import { performance } from 'node:perf_hooks';
 import path from 'node:path';
 
@@ -7,6 +8,9 @@ const TRANSIENT_RENAME_CODES = new Set(['EPERM', 'EACCES', 'EBUSY']);
 const RENAME_MAX_ATTEMPTS = 25;
 const RENAME_MAX_ELAPSED_MS = 2200;
 const RENAME_MAX_DELAY_MS = 100;
+const POWERSHELL_TIMEOUT_MS = 1500;
+const POWERSHELL_MAX_BUFFER = 4096;
+const POWERSHELL_REPLACE_COMMAND = 'param([string]$Source,[string]$Destination); [System.IO.File]::Replace($Source,$Destination,$null)';
 
 export const sha256 = value => createHash('sha256').update(value).digest('hex');
 export const isoDate = (date = new Date(), timeZone = 'Asia/Shanghai') => {
@@ -28,7 +32,41 @@ export const parseArgs = args => {
   return out;
 };
 export async function readJson(file) { return JSON.parse(await readFile(file, 'utf8')); }
-async function renameReplacement(temp, file, { renameImpl, sleepImpl, nowImpl }) {
+export async function windowsAtomicReplace(source, destination, {
+  execFileImpl = execFile,
+  systemRoot = process.env.SystemRoot
+} = {}) {
+  if (!systemRoot || !path.win32.isAbsolute(systemRoot)) throw new Error('SystemRoot is unavailable or invalid');
+  const executable = path.win32.join(systemRoot, 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe');
+  const args = [
+    '-NoLogo',
+    '-NoProfile',
+    '-NonInteractive',
+    '-ExecutionPolicy', 'Bypass',
+    '-Command', POWERSHELL_REPLACE_COMMAND,
+    '-Source', source,
+    '-Destination', destination
+  ];
+  await new Promise((resolve, reject) => {
+    execFileImpl(executable, args, {
+      encoding: 'utf8',
+      maxBuffer: POWERSHELL_MAX_BUFFER,
+      shell: false,
+      timeout: POWERSHELL_TIMEOUT_MS,
+      windowsHide: true
+    }, error => error ? reject(error) : resolve());
+  });
+}
+
+async function renameReplacement(temp, file, {
+  renameImpl,
+  sleepImpl,
+  nowImpl,
+  platform,
+  statImpl,
+  replaceImpl,
+  execFileImpl
+}) {
   const started = nowImpl();
   let lastError;
   for (let attempt = 1; attempt <= RENAME_MAX_ATTEMPTS; attempt++) {
@@ -36,9 +74,22 @@ async function renameReplacement(temp, file, { renameImpl, sleepImpl, nowImpl })
     try { return await renameImpl(temp, file); }
     catch (error) {
       lastError = error;
-      if (!TRANSIENT_RENAME_CODES.has(error.code) || attempt === RENAME_MAX_ATTEMPTS) throw error;
+      if (!TRANSIENT_RENAME_CODES.has(error.code)) throw error;
+      if (platform === 'win32') {
+        let destination;
+        try { destination = await statImpl(file); }
+        catch (statError) {
+          if (statError.code !== 'ENOENT') throw statError;
+        }
+        if (destination) {
+          if (destination.isSymbolicLink() || !destination.isFile()) throw error;
+          try { return await replaceImpl(temp, file, { execFileImpl }); }
+          catch (replaceError) { lastError = replaceError; }
+        }
+      }
+      if (attempt === RENAME_MAX_ATTEMPTS) throw lastError;
       const remaining = RENAME_MAX_ELAPSED_MS - (nowImpl() - started);
-      if (remaining <= 0) throw error;
+      if (remaining <= 0) throw lastError;
       const delay = Math.min(5 * 2 ** (attempt - 1), RENAME_MAX_DELAY_MS, remaining);
       await sleepImpl(delay);
     }
@@ -50,7 +101,11 @@ export async function atomicWrite(file, content, {
   openImpl = open,
   renameImpl = rename,
   sleepImpl = sleep,
-  nowImpl = () => performance.now()
+  nowImpl = () => performance.now(),
+  platform = process.platform,
+  statImpl = lstat,
+  replaceImpl = windowsAtomicReplace,
+  execFileImpl = execFile
 } = {}) {
   await mkdir(path.dirname(file), { recursive: true });
   const temp = `${file}.${process.pid}.${Date.now()}.${Math.random().toString(16).slice(2)}.tmp`;
@@ -61,7 +116,7 @@ export async function atomicWrite(file, content, {
     await handle.sync();
     await handle.close();
     handle = undefined;
-    if (overwrite) await renameReplacement(temp, file, { renameImpl, sleepImpl, nowImpl });
+    if (overwrite) await renameReplacement(temp, file, { renameImpl, sleepImpl, nowImpl, platform, statImpl, replaceImpl, execFileImpl });
     else await link(temp, file);
   } finally {
     if (handle) await handle.close().catch(() => {});

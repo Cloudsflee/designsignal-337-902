@@ -70,6 +70,178 @@ test('atomicWrite retries transient replacement failures after sync and close', 
   await rm(dir, { recursive: true, force: true });
 });
 
+test('atomicWrite uses the Windows regular-file replacement only after sync and close', async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), 'ds-atomic-win-order-')), target = path.join(dir, 'target');
+  await writeFile(target, 'old');
+  const calls = [];
+  let closed = false;
+  const openImpl = async (...args) => {
+    const handle = await open(...args);
+    return {
+      async writeFile(value) { calls.push('write'); await handle.writeFile(value); },
+      async sync() { calls.push('sync'); await handle.sync(); },
+      async close() { calls.push('close'); await handle.close(); closed = true; }
+    };
+  };
+  await atomicWrite(target, 'new', {
+    openImpl,
+    platform: 'win32',
+    renameImpl: async () => { calls.push('rename'); throw Object.assign(new Error('overwrite denied'), { code: 'EPERM' }); },
+    statImpl: async destination => {
+      calls.push('stat');
+      assert.equal(destination, target);
+      assert.equal(closed, true);
+      return { isFile: () => true, isSymbolicLink: () => false };
+    },
+    replaceImpl: async (temp, destination) => {
+      calls.push('replace');
+      assert.equal(closed, true);
+      assert.equal(destination, target);
+      assert.equal(await readFile(temp, 'utf8'), 'new');
+      await writeFile(destination, await readFile(temp));
+    }
+  });
+  assert.deepEqual(calls, ['write', 'sync', 'close', 'rename', 'stat', 'replace']);
+  assert.equal(await readFile(target, 'utf8'), 'new');
+  assert.deepEqual((await readdir(dir)).filter(name => name.endsWith('.tmp')), []);
+  await rm(dir, { recursive: true, force: true });
+});
+
+test('atomicWrite invokes fixed hidden PowerShell arguments without file content', async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), 'ds-atomic-win-exec-')), target = path.join(dir, 'target');
+  await writeFile(target, 'old');
+  const secretContent = ['credential', 'must', 'stay', 'in', 'file'].join('-');
+  const originalSystemRoot = process.env.SystemRoot;
+  let invocation;
+  process.env.SystemRoot = String.raw`C:\Windows`;
+  try {
+    await atomicWrite(target, secretContent, {
+      platform: 'win32',
+      renameImpl: async () => { throw Object.assign(new Error('overwrite denied'), { code: 'EPERM' }); },
+      execFileImpl: (executable, args, options, callback) => {
+        invocation = { executable, args, options };
+        callback(null, '', '');
+      }
+    });
+  } finally {
+    if (originalSystemRoot === undefined) delete process.env.SystemRoot;
+    else process.env.SystemRoot = originalSystemRoot;
+  }
+  const source = invocation.args[invocation.args.indexOf('-Source') + 1];
+  assert.equal(invocation.executable, String.raw`C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe`);
+  assert.deepEqual(invocation.args, [
+    '-NoLogo',
+    '-NoProfile',
+    '-NonInteractive',
+    '-ExecutionPolicy', 'Bypass',
+    '-Command', 'param([string]$Source,[string]$Destination); [System.IO.File]::Replace($Source,$Destination,$null)',
+    '-Source', source,
+    '-Destination', target
+  ]);
+  assert.deepEqual(invocation.options, {
+    encoding: 'utf8',
+    maxBuffer: 4096,
+    shell: false,
+    timeout: 1500,
+    windowsHide: true
+  });
+  assert.match(source, /\.tmp$/);
+  assert.equal(JSON.stringify(invocation).includes(secretContent), false);
+  assert.equal(await readFile(target, 'utf8'), 'old');
+  assert.deepEqual((await readdir(dir)).filter(name => name.endsWith('.tmp')), []);
+  await rm(dir, { recursive: true, force: true });
+});
+
+test('atomicWrite bounds Windows replacement failures and preserves the destination', async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), 'ds-atomic-win-fail-')), target = path.join(dir, 'target');
+  await writeFile(target, 'old');
+  const renameFailure = Object.assign(new Error('overwrite denied'), { code: 'EPERM' });
+  const replaceFailure = new Error('File.Replace failed');
+  let now = 0, renames = 0, replacements = 0;
+  await assert.rejects(() => atomicWrite(target, 'new', {
+    platform: 'win32',
+    renameImpl: async () => { renames++; now += 700; throw renameFailure; },
+    statImpl: async () => ({ isFile: () => true, isSymbolicLink: () => false }),
+    replaceImpl: async () => { replacements++; throw replaceFailure; },
+    sleepImpl: async delay => { now += delay; },
+    nowImpl: () => now
+  }), error => error === replaceFailure);
+  assert.equal(renames, 4);
+  assert.equal(replacements, 4);
+  assert.equal(await readFile(target, 'utf8'), 'old');
+  assert.deepEqual((await readdir(dir)).filter(name => name.endsWith('.tmp')), []);
+  await rm(dir, { recursive: true, force: true });
+});
+
+test('atomicWrite immediately rejects a Windows directory reported as EPERM', async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), 'ds-atomic-win-dir-')), target = path.join(dir, 'target');
+  await mkdir(target);
+  const failure = Object.assign(new Error('directory overwrite denied'), { code: 'EPERM' });
+  let renames = 0, replacements = 0, sleeps = 0;
+  await assert.rejects(() => atomicWrite(target, 'new', {
+    platform: 'win32',
+    renameImpl: async () => { renames++; throw failure; },
+    replaceImpl: async () => { replacements++; },
+    sleepImpl: async () => { sleeps++; }
+  }), error => error === failure);
+  assert.equal(renames, 1);
+  assert.equal(replacements, 0);
+  assert.equal(sleeps, 0);
+  assert.deepEqual((await readdir(dir)).filter(name => name.endsWith('.tmp')), []);
+  await rm(dir, { recursive: true, force: true });
+});
+
+test('atomicWrite never replaces Windows symlinks or absent destinations', async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), 'ds-atomic-win-gate-'));
+  const failure = Object.assign(new Error('overwrite denied'), { code: 'EPERM' });
+  let replacements = 0, sleeps = 0;
+  const symlinkTarget = path.join(dir, 'symlink-target');
+  await writeFile(symlinkTarget, 'old');
+  await assert.rejects(() => atomicWrite(symlinkTarget, 'new', {
+    platform: 'win32',
+    renameImpl: async () => { throw failure; },
+    statImpl: async () => ({ isFile: () => true, isSymbolicLink: () => true }),
+    replaceImpl: async () => { replacements++; },
+    sleepImpl: async () => { sleeps++; }
+  }), error => error === failure);
+  assert.equal(await readFile(symlinkTarget, 'utf8'), 'old');
+  const absentTarget = path.join(dir, 'absent-target');
+  let now = 0;
+  await assert.rejects(() => atomicWrite(absentTarget, 'new', {
+    platform: 'win32',
+    renameImpl: async () => { now += 1000; throw failure; },
+    statImpl: async () => { throw Object.assign(new Error('absent'), { code: 'ENOENT' }); },
+    replaceImpl: async () => { replacements++; },
+    sleepImpl: async delay => { now += delay; },
+    nowImpl: () => now
+  }), error => error === failure);
+  assert.equal(replacements, 0);
+  assert.equal(sleeps, 0);
+  assert.equal((await readdir(dir)).includes('absent-target'), false);
+  assert.deepEqual((await readdir(dir)).filter(name => name.endsWith('.tmp')), []);
+  await rm(dir, { recursive: true, force: true });
+});
+
+test('atomicWrite excludes the Windows fallback on other platforms', async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), 'ds-atomic-nonwin-')), target = path.join(dir, 'target');
+  await writeFile(target, 'old');
+  const failure = Object.assign(new Error('busy'), { code: 'EBUSY' });
+  let now = 0, stats = 0, replacements = 0;
+  await assert.rejects(() => atomicWrite(target, 'new', {
+    platform: 'linux',
+    renameImpl: async () => { now += 1000; throw failure; },
+    statImpl: async () => { stats++; },
+    replaceImpl: async () => { replacements++; },
+    sleepImpl: async delay => { now += delay; },
+    nowImpl: () => now
+  }), error => error === failure);
+  assert.equal(stats, 0);
+  assert.equal(replacements, 0);
+  assert.equal(await readFile(target, 'utf8'), 'old');
+  assert.deepEqual((await readdir(dir)).filter(name => name.endsWith('.tmp')), []);
+  await rm(dir, { recursive: true, force: true });
+});
+
 test('atomicWrite bounds transient rename retries and preserves the destination', async () => {
   const dir = await mkdtemp(path.join(os.tmpdir(), 'ds-atomic-exhaust-')), target = path.join(dir, 'target');
   await writeFile(target, 'old');
@@ -131,13 +303,18 @@ test('atomicWrite closes and cleans up when sync fails before publication', asyn
 test('atomicWrite does not retry structural rename failures', async () => {
   const dir = await mkdtemp(path.join(os.tmpdir(), 'ds-atomic-structural-')), target = path.join(dir, 'target');
   await writeFile(target, 'old');
-  let attempts = 0, sleeps = 0;
+  let attempts = 0, stats = 0, replacements = 0, sleeps = 0;
   const failure = Object.assign(new Error('target is a directory'), { code: 'EISDIR' });
   await assert.rejects(() => atomicWrite(target, 'new', {
+    platform: 'win32',
     renameImpl: async () => { attempts++; throw failure; },
+    statImpl: async () => { stats++; },
+    replaceImpl: async () => { replacements++; },
     sleepImpl: async () => { sleeps++; }
   }), error => error === failure);
   assert.equal(attempts, 1);
+  assert.equal(stats, 0);
+  assert.equal(replacements, 0);
   assert.equal(sleeps, 0);
   assert.equal(await readFile(target, 'utf8'), 'old');
   assert.deepEqual((await readdir(dir)).filter(name => name.endsWith('.tmp')), []);
