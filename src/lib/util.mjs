@@ -1,6 +1,12 @@
 import { createHash } from 'node:crypto';
 import { link, mkdir, readFile, rename, open, rm } from 'node:fs/promises';
+import { performance } from 'node:perf_hooks';
 import path from 'node:path';
+
+const TRANSIENT_RENAME_CODES = new Set(['EPERM', 'EACCES', 'EBUSY']);
+const RENAME_MAX_ATTEMPTS = 5;
+const RENAME_MAX_ELAPSED_MS = 100;
+const RENAME_MAX_DELAY_MS = 25;
 
 export const sha256 = value => createHash('sha256').update(value).digest('hex');
 export const isoDate = (date = new Date(), timeZone = 'Asia/Shanghai') => {
@@ -22,17 +28,40 @@ export const parseArgs = args => {
   return out;
 };
 export async function readJson(file) { return JSON.parse(await readFile(file, 'utf8')); }
-export async function atomicWrite(file, content, { overwrite = true } = {}) {
+async function renameReplacement(temp, file, { renameImpl, sleepImpl, nowImpl }) {
+  const started = nowImpl();
+  let lastError;
+  for (let attempt = 1; attempt <= RENAME_MAX_ATTEMPTS; attempt++) {
+    if (attempt > 1 && nowImpl() - started >= RENAME_MAX_ELAPSED_MS) throw lastError;
+    try { return await renameImpl(temp, file); }
+    catch (error) {
+      lastError = error;
+      if (!TRANSIENT_RENAME_CODES.has(error.code) || attempt === RENAME_MAX_ATTEMPTS) throw error;
+      const remaining = RENAME_MAX_ELAPSED_MS - (nowImpl() - started);
+      if (remaining <= 0) throw error;
+      const delay = Math.min(5 * 2 ** (attempt - 1), RENAME_MAX_DELAY_MS, remaining);
+      await sleepImpl(delay);
+    }
+  }
+}
+
+export async function atomicWrite(file, content, {
+  overwrite = true,
+  openImpl = open,
+  renameImpl = rename,
+  sleepImpl = sleep,
+  nowImpl = () => performance.now()
+} = {}) {
   await mkdir(path.dirname(file), { recursive: true });
   const temp = `${file}.${process.pid}.${Date.now()}.${Math.random().toString(16).slice(2)}.tmp`;
   let handle;
   try {
-    handle = await open(temp, 'wx', 0o600);
+    handle = await openImpl(temp, 'wx', 0o600);
     await handle.writeFile(content);
     await handle.sync();
     await handle.close();
     handle = undefined;
-    if (overwrite) await rename(temp, file);
+    if (overwrite) await renameReplacement(temp, file, { renameImpl, sleepImpl, nowImpl });
     else await link(temp, file);
   } finally {
     if (handle) await handle.close().catch(() => {});

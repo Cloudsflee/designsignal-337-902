@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, open, readFile, readdir, rm, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { fixtureCandidates } from '../fixtures/daily.mjs';
@@ -39,6 +39,122 @@ test('atomicWrite removes its synced temp file when publication fails', async ()
   const dir = await mkdtemp(path.join(os.tmpdir(), 'ds-atomic-')), target = path.join(dir, 'target');
   await mkdir(target);
   await assert.rejects(() => atomicWrite(target, 'content'));
+  assert.deepEqual((await readdir(dir)).filter(name => name.endsWith('.tmp')), []);
+  await rm(dir, { recursive: true, force: true });
+});
+
+test('atomicWrite retries transient replacement failures after sync and close', async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), 'ds-atomic-retry-')), target = path.join(dir, 'target');
+  await writeFile(target, 'old');
+  const calls = [], delays = [];
+  let closed = false, attempts = 0, published;
+  const openImpl = async (...args) => {
+    const handle = await open(...args);
+    return {
+      async writeFile(value) { calls.push('write'); await handle.writeFile(value); },
+      async sync() { calls.push('sync'); await handle.sync(); },
+      async close() { calls.push('close'); await handle.close(); closed = true; }
+    };
+  };
+  const renameImpl = async (temp, destination) => {
+    calls.push('rename');
+    assert.equal(closed, true);
+    if (++attempts < 3) throw Object.assign(new Error('temporarily locked'), { code: attempts === 1 ? 'EPERM' : 'EACCES' });
+    published = { destination, content: await readFile(temp, 'utf8') };
+  };
+  await atomicWrite(target, 'new', { openImpl, renameImpl, sleepImpl: async delay => delays.push(delay), nowImpl: () => 0 });
+  assert.deepEqual(calls, ['write', 'sync', 'close', 'rename', 'rename', 'rename']);
+  assert.deepEqual(delays, [5, 10]);
+  assert.deepEqual(published, { destination: target, content: 'new' });
+  assert.deepEqual((await readdir(dir)).filter(name => name.endsWith('.tmp')), []);
+  await rm(dir, { recursive: true, force: true });
+});
+
+test('atomicWrite bounds transient rename retries and preserves the destination', async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), 'ds-atomic-exhaust-')), target = path.join(dir, 'target');
+  await writeFile(target, 'old');
+  let attempts = 0;
+  const delays = [];
+  const failure = Object.assign(new Error('still busy'), { code: 'EBUSY' });
+  await assert.rejects(
+    () => atomicWrite(target, 'new', { renameImpl: async () => { attempts++; throw failure; }, sleepImpl: async delay => delays.push(delay), nowImpl: () => 0 }),
+    error => error === failure
+  );
+  assert.equal(attempts, 5);
+  assert.deepEqual(delays, [5, 10, 20, 25]);
+  assert.equal(await readFile(target, 'utf8'), 'old');
+  assert.deepEqual((await readdir(dir)).filter(name => name.endsWith('.tmp')), []);
+  await rm(dir, { recursive: true, force: true });
+});
+
+test('atomicWrite stops transient retries at the elapsed-time cap', async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), 'ds-atomic-time-')), target = path.join(dir, 'target');
+  await writeFile(target, 'old');
+  let attempts = 0, now = 0;
+  const failure = Object.assign(new Error('permission pending'), { code: 'EPERM' });
+  await assert.rejects(() => atomicWrite(target, 'new', {
+    renameImpl: async () => { attempts++; now += 60; throw failure; },
+    sleepImpl: async delay => { now += delay; },
+    nowImpl: () => now
+  }), error => error === failure);
+  assert.equal(attempts, 2);
+  assert.equal(await readFile(target, 'utf8'), 'old');
+  assert.deepEqual((await readdir(dir)).filter(name => name.endsWith('.tmp')), []);
+  await rm(dir, { recursive: true, force: true });
+});
+
+test('atomicWrite closes and cleans up when sync fails before publication', async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), 'ds-atomic-sync-')), target = path.join(dir, 'target');
+  await writeFile(target, 'old');
+  const failure = new Error('sync failed');
+  let closed = false, renameCalls = 0;
+  const openImpl = async (...args) => {
+    const handle = await open(...args);
+    return {
+      async writeFile(value) { await handle.writeFile(value); },
+      async sync() { throw failure; },
+      async close() { await handle.close(); closed = true; }
+    };
+  };
+  await assert.rejects(() => atomicWrite(target, 'new', {
+    openImpl,
+    renameImpl: async () => { renameCalls++; }
+  }), error => error === failure);
+  assert.equal(closed, true);
+  assert.equal(renameCalls, 0);
+  assert.equal(await readFile(target, 'utf8'), 'old');
+  assert.deepEqual((await readdir(dir)).filter(name => name.endsWith('.tmp')), []);
+  await rm(dir, { recursive: true, force: true });
+});
+
+test('atomicWrite does not retry structural rename failures', async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), 'ds-atomic-structural-')), target = path.join(dir, 'target');
+  await writeFile(target, 'old');
+  let attempts = 0, sleeps = 0;
+  const failure = Object.assign(new Error('target is a directory'), { code: 'EISDIR' });
+  await assert.rejects(() => atomicWrite(target, 'new', {
+    renameImpl: async () => { attempts++; throw failure; },
+    sleepImpl: async () => { sleeps++; }
+  }), error => error === failure);
+  assert.equal(attempts, 1);
+  assert.equal(sleeps, 0);
+  assert.equal(await readFile(target, 'utf8'), 'old');
+  assert.deepEqual((await readdir(dir)).filter(name => name.endsWith('.tmp')), []);
+  await rm(dir, { recursive: true, force: true });
+});
+
+test('atomicWrite overwrite false retains exactly-once link publication', async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), 'ds-atomic-link-')), target = path.join(dir, 'target');
+  await writeFile(target, 'old');
+  let renameCalls = 0, sleeps = 0;
+  await assert.rejects(() => atomicWrite(target, 'new', {
+    overwrite: false,
+    renameImpl: async () => { renameCalls++; },
+    sleepImpl: async () => { sleeps++; }
+  }), error => error.code === 'EEXIST');
+  assert.equal(renameCalls, 0);
+  assert.equal(sleeps, 0);
+  assert.equal(await readFile(target, 'utf8'), 'old');
   assert.deepEqual((await readdir(dir)).filter(name => name.endsWith('.tmp')), []);
   await rm(dir, { recursive: true, force: true });
 });
@@ -89,9 +205,11 @@ test('conflicting manifest identity is refused', async () => {
 
 test('per-date lock excludes concurrent holders and cleans up', async () => {
   const dir = await mkdtemp(path.join(os.tmpdir(), 'ds-lock-')), lock = path.join(dir, 'date.lock');
-  let release; const gate = new Promise(resolve => { release = resolve; });
-  const first = withLock(lock, async () => gate);
-  await new Promise(resolve => setImmediate(resolve));
+  let release, markEntered;
+  const gate = new Promise(resolve => { release = resolve; });
+  const entered = new Promise(resolve => { markEntered = resolve; });
+  const first = withLock(lock, async () => { markEntered(); return gate; });
+  await entered;
   await assert.rejects(() => withLock(lock, async () => {}), /already locked/);
   release(); await first;
   await withLock(lock, async () => {});
