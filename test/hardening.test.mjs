@@ -109,7 +109,7 @@ test('Codex TOML provider loads with environment precedence and redaction-safe e
 test('custom provider credentials never appear in model errors', async () => {
   const token = ['opaque', 'fixture', 'value'].join('-');
   const config = { model: { model: 'm', token, baseUrl: 'https://models.example/v1', wireApi: 'responses' }, network: { timeoutMs: 100, maxJsonBytes: 1024 } };
-  await assert.rejects(() => enrichItem(fixtureCandidates[0], config, { fetchImpl: async () => { throw new Error(`transport accidentally included ${token}`); } }), error => /REDACTED/.test(error.message) && !error.message.includes(token));
+  await assert.rejects(() => enrichItem(fixtureCandidates[0], config, { fetchImpl: async () => { throw new Error(`transport accidentally included ${token}`); }, sleepImpl: async () => {} }), error => /REDACTED/.test(error.message) && !error.message.includes(token));
 });
 
 test('institution listings emit dated candidates and optional source failures are explicit', async () => {

@@ -3,7 +3,7 @@ import { mkdir } from 'node:fs/promises';
 import { fixtureCandidates } from '../../fixtures/daily.mjs';
 import { collectSources } from './adapters.mjs';
 import { selectDaily } from './select.mjs';
-import { enrichItem, synthesizeDaily } from './model.mjs';
+import { enrichItems, synthesizeDaily } from './model.mjs';
 import { buildReport } from './report.mjs';
 import { readHistory, writeReport } from './storage.mjs';
 import { queueDeliveries, retryOutbox } from './push.mjs';
@@ -21,7 +21,7 @@ export async function daily(config, { fixture = false, dryRun = false, date = is
   const history = fixture ? [] : await readHistory(config.dataDir);
   const { selected, rejected, policy } = selectDaily(collected.candidates, { date, history });
   const persisted = !fixture && !dryRun ? await persistSelectedAssets(config, selected, ctx) : { byItem: new Map(), audit: [] };
-  const items = fixture ? selected : await Promise.all(selected.map(async x => attachCachedAssets(await enrichItem(x, config, ctx), persisted.byItem.get(x.id))));
+  const items = fixture ? selected : await enrichItems(selected, config, ctx, (item, raw) => attachCachedAssets(item, persisted.byItem.get(raw.id)));
   const generated = fixture ? null : await synthesizeDaily(items, config, ctx);
   const report = await buildReport({ date, items, rejected, health: collected.health, selectionPolicy: policy, assetAudit: persisted.audit, fixture, generated });
   if (dryRun || fixture) return { status: dryRun ? 'dry-run' : 'fixture-no-write', report };

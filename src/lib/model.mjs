@@ -2,7 +2,7 @@ import { readBoundedBody } from './network.mjs';
 import { validateItem, validateSynthesis } from './schema.mjs';
 import { loadExamEvidence } from './evidence.mjs';
 import { loadRecentFeedback, loadStudyProfile } from './study.mjs';
-import { redact } from './util.mjs';
+import { redact, sleep } from './util.mjs';
 
 const ITEM_SYSTEM = `You are DesignSignal, an evidence-disciplined bilingual design research editor. Return only schema-compliant JSON. Never invent facts or citations. Use only the supplied candidate. Explicitly state limitations. Produce Chinese and English title, synopsis, and analyses (evidence, method, novelty, limits, whyLearn, studyAction), map only to supplied 337/902 topic identifiers, and give confidence from 0 to 1.`;
 const SYNTHESIS_SYSTEM = `You are DesignSignal's evidence synthesis editor. Return only schema-compliant JSON. Synthesize only the six supplied validated items, official 337/902 evidence, optional study profile, and recent structured feedback. Never invent item IDs, exam topics, facts, or URLs. Distinguish evidence from exam hypotheses and explicitly state counterevidence and uncertainty. Produce a bilingual overview, cross-item patterns, 2-4 bilingual exam hypotheses, and one item-grounded bilingual exercise. The rubric must total exactly 100 points and use observable indicators. Evidence links must be copied verbatim from allowedEvidenceLinks.`;
@@ -81,42 +81,78 @@ function outputText(data) {
   throw new Error('Responses API returned no output text');
 }
 
-const safeError = (error, token) => {
-  let message = String(redact(error?.message || 'unknown model error'));
-  if (token) message = message.replaceAll(token, '[REDACTED]');
-  return message.slice(0, 1000);
+const MAX_RETRY_AFTER_MS = 30000;
+const RETRY_BASE_MS = 1000;
+
+class ModelError extends Error {
+  constructor(message, { retryable = false, retryAfterMs = 0 } = {}) {
+    super(message);
+    this.retryable = retryable;
+    this.retryAfterMs = retryAfterMs;
+  }
+}
+
+const retryAfterMs = response => {
+  const value = response.headers.get('retry-after');
+  if (!value || !/^\d+(?:\.\d+)?$/.test(value.trim())) return 0;
+  return Math.min(Number(value) * 1000, MAX_RETRY_AFTER_MS);
 };
+
+const publicFailure = error => error instanceof ModelError ? error : new ModelError('invalid structured model output [REDACTED]', { retryable: true });
 
 async function structuredResponse({ config, ctx, instructions, input, schema, name, validate }) {
   if (!config.model.model || !config.model.token) throw new Error('live model generation requires OPENAI_MODEL and OPENAI_API_KEY');
   if ((config.model.wireApi || 'responses') !== 'responses') throw new Error('configured model provider must use the Responses wire API');
-  const endpoint = new URL('responses', config.model.baseUrl.replace(/\/?$/, '/')).href;
+  const endpointUrl = new URL(config.model.baseUrl);
+  endpointUrl.pathname = `${endpointUrl.pathname.replace(/\/?$/, '/')}responses`;
+  const endpoint = endpointUrl.href;
   let last;
   for (let attempt = 0; attempt < 3; attempt++) {
+    let timedOut = false;
     try {
       const controller = new AbortController();
-      const timer = setTimeout(() => controller.abort(), config.network.timeoutMs * 2);
+      const setTimer = ctx.setTimeoutImpl || setTimeout;
+      const clearTimer = ctx.clearTimeoutImpl || clearTimeout;
+      const timer = setTimer(() => { timedOut = true; controller.abort(); }, config.model.timeoutMs ?? 180000);
       let responseBody;
       try {
-        const response = await (ctx.fetchImpl || fetch)(endpoint, {
-          method: 'POST', signal: controller.signal,
-          headers: { authorization: `Bearer ${config.model.token}`, 'content-type': 'application/json' },
-          body: JSON.stringify({
-            model: config.model.model,
-            instructions,
-            input: JSON.stringify(input),
-            max_output_tokens: config.model.maxOutputTokens || 6000,
-            text: { format: { type: 'json_schema', name, strict: true, schema } }
-          })
-        });
-        if (!response.ok) throw new Error(`model HTTP ${response.status}`);
+        let response;
+        try {
+          response = await (ctx.fetchImpl || fetch)(endpoint, {
+            method: 'POST', signal: controller.signal,
+            headers: { authorization: `Bearer ${config.model.token}`, 'content-type': 'application/json' },
+            body: JSON.stringify({
+              model: config.model.model,
+              instructions,
+              input: JSON.stringify(input),
+              max_output_tokens: config.model.maxOutputTokens || 6000,
+              store: false,
+              text: { format: { type: 'json_schema', name, strict: true, schema } }
+            })
+          });
+        } catch (error) {
+          if (timedOut) throw new ModelError('model request timed out [REDACTED]', { retryable: true });
+          if (error?.name === 'AbortError') throw new ModelError('model request aborted [REDACTED]', { retryable: true });
+          throw new ModelError('model network error [REDACTED]', { retryable: true });
+        }
+        if (!response.ok) {
+          const retryable = response.status === 429 || (response.status >= 500 && response.status <= 599);
+          throw new ModelError(`model HTTP ${response.status}`, { retryable, retryAfterMs: retryable ? retryAfterMs(response) : 0 });
+        }
         responseBody = await readBoundedBody(response, config.network.maxJsonBytes || 2 * 1024 * 1024);
-      } finally { clearTimeout(timer); }
+      } finally { clearTimer(timer); }
       const parsed = JSON.parse(outputText(JSON.parse(responseBody.toString('utf8'))));
       return validate(parsed);
-    } catch (error) { last = error; }
+    } catch (error) {
+      last = timedOut ? new ModelError('model request timed out [REDACTED]', { retryable: true }) : publicFailure(error);
+      if (!last.retryable) throw new Error(`structured model output failed: ${last.message}`);
+      if (attempt < 2 && last instanceof ModelError && (last.message.includes('timed out') || last.message.includes('network') || last.message.includes('aborted') || /^model HTTP (?:429|5\d\d)$/.test(last.message))) {
+        const delay = Math.max(Math.min(RETRY_BASE_MS * 2 ** attempt, MAX_RETRY_AFTER_MS), last.retryAfterMs || 0);
+        await (ctx.sleepImpl || sleep)(delay);
+      }
+    }
   }
-  throw new Error(`structured model output failed after 3 attempts: ${safeError(last, config.model.token)}`);
+  throw new Error(`structured model output failed after 3 attempts: ${last?.message || 'unknown model error [REDACTED]'}`);
 }
 
 export async function enrichItem(raw, config, ctx = {}) {
@@ -141,6 +177,28 @@ export async function enrichItem(raw, config, ctx = {}) {
       return validateItem(item);
     }
   });
+}
+
+export async function enrichItems(rawItems, config, ctx = {}, transform = value => value) {
+  const results = new Array(rawItems.length);
+  const failures = [];
+  let nextIndex = 0;
+  let stopped = false;
+  const worker = async () => {
+    while (!stopped) {
+      const index = nextIndex++;
+      if (index >= rawItems.length) return;
+      try { results[index] = transform(await enrichItem(rawItems[index], config, ctx), rawItems[index]); }
+      catch { failures.push(index); stopped = true; }
+    }
+  };
+  const workerCount = Math.min(config.model.concurrency ?? 2, rawItems.length);
+  await Promise.all(Array.from({ length: workerCount }, worker));
+  if (failures.length) {
+    const index = Math.min(...failures);
+    throw new Error(`model analysis failed for item ${rawItems[index].id}`);
+  }
+  return results;
 }
 
 const clip = (value, max = 2400) => String(value ?? '').slice(0, max);

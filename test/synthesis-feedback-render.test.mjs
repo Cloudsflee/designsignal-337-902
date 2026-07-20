@@ -6,7 +6,7 @@ import path from 'node:path';
 import { fixtureCandidates } from '../fixtures/daily.mjs';
 import { selectDaily } from '../src/lib/select.mjs';
 import { buildReport } from '../src/lib/report.mjs';
-import { enrichItem, synthesizeDaily } from '../src/lib/model.mjs';
+import { enrichItems, synthesizeDaily } from '../src/lib/model.mjs';
 import { loadConfig } from '../src/lib/config.mjs';
 import { appendFeedback, loadRecentFeedback, loadStudyProfile, validateFeedback } from '../src/lib/study.mjs';
 import { validateReport } from '../src/lib/schema.mjs';
@@ -20,8 +20,10 @@ async function fixtureReport() {
 }
 const synthesisOutput = report => ({ overview: report.synthesis.overview, patterns: report.synthesis.patterns, hypotheses: report.synthesis.hypotheses, exercise: report.exercise });
 const response = output => new Response(JSON.stringify({ output_text: JSON.stringify(output) }), { status: 200, headers: { 'content-type': 'application/json' } });
+const deferred = () => { let resolve; const promise = new Promise(done => { resolve = done; }); return { promise, resolve }; };
+const waitFor = async predicate => { for (let index = 0; index < 100 && !predicate(); index++) await new Promise(resolve => setImmediate(resolve)); assert.ok(predicate(), 'condition did not become true'); };
 
-test('six validated item calls are followed by a bounded seventh synthesis call', async () => {
+test('six concurrency-limited item calls preserve order and precede the seventh synthesis call', async () => {
   const dir = await mkdtemp(path.join(os.tmpdir(), 'ds-synthesis-'));
   const profileFile = path.join(dir, 'profile.json');
   const privateMarker = ['profile', 'private', 'marker'].join('-');
@@ -31,21 +33,36 @@ test('six validated item calls are followed by a bounded seventh synthesis call'
   config.study.recentFeedbackCount = 2;
   for (let index = 0; index < 3; index++) await appendFeedback(config, { date: `2026-07-${16 + index}`, comprehension: 60 + index, transfer: 50, exercise: 70, minutes: 45, weakPoints: [`weak-${index}`], note: `note-${index}` }, new Date('2026-07-19T12:00:00Z'));
   const report = await fixtureReport();
-  const bodies = [];
+  const bodies = [], pending = new Map(), completionOrder = [];
+  let active = 0, maxActive = 0;
   const fetchImpl = async (_url, init) => {
     const request = JSON.parse(init.body); bodies.push(request);
     const input = JSON.parse(request.input);
     if (input.candidate) {
       const raw = input.candidate;
+      active++; maxActive = Math.max(maxActive, active);
+      const gate = deferred(); pending.set(raw.id, gate); await gate.promise;
+      completionOrder.push(raw.id); active--;
       return response({ title: raw.title, synopsis: raw.synopsis, analysis: raw.analysis, exam: raw.exam, confidence: raw.confidence });
     }
     return response(synthesisOutput(report));
   };
-  const liveItems = [];
-  for (const raw of selectedFixture().selected) liveItems.push(await enrichItem(raw, config, { fetchImpl }));
+  const selected = selectedFixture().selected;
+  const itemPromise = enrichItems(selected, config, { fetchImpl });
+  await waitFor(() => pending.size === 2);
+  for (let index = 1; index < selected.length; index++) {
+    pending.get(selected[index].id).resolve();
+    if (index + 1 < selected.length) await waitFor(() => pending.has(selected[index + 1].id));
+  }
+  pending.get(selected[0].id).resolve();
+  const liveItems = await itemPromise;
+  assert.equal(maxActive, 2);
+  assert.deepEqual(completionOrder, [...selected.slice(1).map(item => item.id), selected[0].id]);
+  assert.deepEqual(liveItems.map(item => item.id), selected.map(item => item.id));
   const synthesis = await synthesizeDaily(liveItems, config, { fetchImpl });
   assert.equal(bodies.length, 7);
   assert.ok(bodies.every(body => body.max_output_tokens === 4321));
+  assert.ok(bodies.every(body => body.store === false));
   assert.equal(bodies[6].text.format.name, 'designsignal_daily_synthesis');
   assert.equal(bodies[6].text.format.strict, true);
   const seventhInput = JSON.parse(bodies[6].input);

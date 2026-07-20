@@ -88,6 +88,7 @@ export async function loadConfig({ configPath, env = process.env } = {}) {
   const defaults = await readJson(path.join(ROOT, 'config/default.json'));
   let explicit = {};
   if (configPath) explicit = JSON.parse(await readFile(path.resolve(configPath), 'utf8'));
+  const setting = (name, explicitValue, defaultValue) => env[name] !== undefined && env[name] !== '' ? env[name] : explicitValue ?? defaultValue;
   const codex = await loadCodexConfig(env);
   const codexProvider = codex.providers?.[codex.model_provider] || {};
   const config = {
@@ -103,7 +104,9 @@ export async function loadConfig({ configPath, env = process.env } = {}) {
       token: env.OPENAI_API_KEY || explicit.model?.token || codexProvider.experimental_bearer_token || '',
       provider: env.OPENAI_BASE_URL || env.OPENAI_MODEL || env.OPENAI_API_KEY ? 'openai-env' : explicit.model ? 'designsignal-config' : codex.model_provider || 'openai',
       wireApi: env.OPENAI_BASE_URL || env.OPENAI_MODEL || env.OPENAI_API_KEY ? 'responses' : explicit.model?.wireApi || codexProvider.wire_api || 'responses',
-      maxOutputTokens: Number(env.DESIGNSIGNAL_MODEL_MAX_OUTPUT_TOKENS || explicit.model?.maxOutputTokens || defaults.model?.maxOutputTokens || 6000)
+      maxOutputTokens: Number(setting('DESIGNSIGNAL_MODEL_MAX_OUTPUT_TOKENS', explicit.model?.maxOutputTokens, defaults.model?.maxOutputTokens ?? 6000)),
+      concurrency: Number(setting('DESIGNSIGNAL_MODEL_CONCURRENCY', explicit.model?.concurrency, defaults.model?.concurrency ?? 2)),
+      timeoutMs: Number(setting('DESIGNSIGNAL_MODEL_TIMEOUT_MS', explicit.model?.timeoutMs, defaults.model?.timeoutMs ?? 180000))
     },
     openAlex: {
       apiKey: env.OPENALEX_API_KEY || '',
@@ -134,6 +137,8 @@ export async function loadConfig({ configPath, env = process.env } = {}) {
     if (!['http:', 'https:'].includes(modelUrl.protocol) || modelUrl.username || modelUrl.password) throw new Error();
   } catch { throw new Error('invalid model base URL'); }
   if (!Number.isInteger(config.model.maxOutputTokens) || config.model.maxOutputTokens < 256 || config.model.maxOutputTokens > 32768) throw new Error('model max output tokens must be an integer from 256 to 32768');
+  if (!Number.isInteger(config.model.concurrency) || config.model.concurrency < 1 || config.model.concurrency > 4) throw new Error('model concurrency must be an integer from 1 to 4');
+  if (!Number.isInteger(config.model.timeoutMs) || config.model.timeoutMs < 10000 || config.model.timeoutMs > 600000) throw new Error('model timeout must be an integer from 10000 to 600000 milliseconds');
   for (const [key, min, max] of [['profileMaxBytes', 1024, 1048576], ['feedbackMaxBytes', 1024, 1048576], ['recentFeedbackCount', 1, 100], ['maxDirections', 1, 50], ['maxWeaknesses', 1, 50]]) {
     if (!Number.isInteger(config.study[key]) || config.study[key] < min || config.study[key] > max) throw new Error(`invalid study.${key}`);
   }

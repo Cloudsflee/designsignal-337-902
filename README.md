@@ -19,6 +19,8 @@ Live bilingual enrichment requires an OpenAI-compatible Responses API. A live ru
 export OPENAI_MODEL=your-model
 export OPENAI_API_KEY=your-token
 export OPENAI_BASE_URL=https://api.openai.com/v1
+export DESIGNSIGNAL_MODEL_CONCURRENCY=2
+export DESIGNSIGNAL_MODEL_TIMEOUT_MS=180000
 export DESIGNSIGNAL_MODEL_MAX_OUTPUT_TOKENS=6000
 node src/cli.mjs daily
 ```
