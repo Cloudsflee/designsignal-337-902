@@ -1,34 +1,58 @@
+name: designsignal
+
 services:
   dashboard:
-    build: .
+    image: designsignal-337-902:1.0.0
+    build:
+      context: .
+    container_name: designsignal-dashboard
     restart: unless-stopped
     read_only: true
-    tmpfs: [/tmp]
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=64m,mode=1777
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
     environment:
       DESIGNSIGNAL_DATA_DIR: /data
       DESIGNSIGNAL_HOST: 0.0.0.0
-      DESIGNSIGNAL_PORT: 3379
+      DESIGNSIGNAL_PORT: "3379"
     volumes:
       - designsignal-data:/data
-      - ./config:/app/config:ro
-    ports: ["3379:3379"]
+    ports:
+      - "127.0.0.1:3379:3379"
     healthcheck:
       test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3379/healthz').then(r=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))"]
       interval: 30s
       timeout: 5s
       retries: 3
+      start_period: 10s
+
   scheduler:
-    build: .
+    image: designsignal-337-902:1.0.0
+    container_name: designsignal-scheduler
     restart: unless-stopped
     read_only: true
-    tmpfs: [/tmp]
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=64m,mode=1777
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
     command: ["node", "src/cli.mjs", "schedule"]
     environment:
       DESIGNSIGNAL_DATA_DIR: /data
       DESIGNSIGNAL_TIMEZONE: Asia/Shanghai
-      OPENAI_BASE_URL: ${OPENAI_BASE_URL:-https://api.openai.com/v1}
-      OPENAI_MODEL: ${OPENAI_MODEL:-}
-      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      CODEX_CONFIG_FILE: /run/secrets/codex_config
+      OPENAI_BASE_URL:
+      OPENAI_MODEL:
+      OPENAI_API_KEY:
+      OPENALEX_API_KEY:
+      OPENALEX_MAILTO:
+      DESIGNSIGNAL_RSSHUB_FEEDS:
+      DESIGNSIGNAL_RSSHUB_WECHAT_FEEDS:
+      DESIGNSIGNAL_RSSHUB_ZHIHU_FEEDS:
       DESIGNSIGNAL_MODEL_CONCURRENCY: ${DESIGNSIGNAL_MODEL_CONCURRENCY:-2}
       DESIGNSIGNAL_MODEL_TIMEOUT_MS: ${DESIGNSIGNAL_MODEL_TIMEOUT_MS:-180000}
       DESIGNSIGNAL_MODEL_MAX_OUTPUT_TOKENS: ${DESIGNSIGNAL_MODEL_MAX_OUTPUT_TOKENS:-6000}
@@ -38,6 +62,21 @@ services:
       WECOM_WEBHOOK_URL: ${WECOM_WEBHOOK_URL:-}
     volumes:
       - designsignal-data:/data
-      - ./config:/app/config:ro
+    secrets:
+      - source: codex_config
+        target: codex_config
+        mode: 0444
+    healthcheck:
+      test: ["CMD", "node", "-e", "require('node:fs').readFileSync('/proc/1/cmdline','utf8').includes('schedule')||process.exit(1)"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+
 volumes:
   designsignal-data:
+    name: designsignal-data
+
+secrets:
+  codex_config:
+    file: "${DESIGNSIGNAL_CODEX_CONFIG_FILE:-${USERPROFILE}/.codex/config.toml}"

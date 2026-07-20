@@ -50,3 +50,5 @@ The fixture is synthetic, offline test material and is always labeled `fixture: 
 - `schedule`: resilient foreground scheduler for 23:50 `Asia/Shanghai`; failed runs are logged and the loop continues.
 
 See [source policy](docs/SOURCE_POLICY.md), [operations](docs/OPERATIONS.md), and [calibration](docs/CALIBRATION.md). No generated live data or secrets belong in Git.
+
+The Docker Compose production baseline uses the host Codex TOML as a read-only scheduler secret, a stable persistent data volume, and a loopback-only dashboard. See [operations](docs/OPERATIONS.md#docker) for exact Windows/POSIX startup, provider checks, scheduling verification, and backup/restore commands.
