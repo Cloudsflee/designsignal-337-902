@@ -53,6 +53,32 @@ test('best bounded priority paper safely replaces a ranked paper without weakeni
   assert.ok(result.rejected.some(entry => entry.id === audit.replacement.replacedItemId && entry.reason === 'priority-institution-replacement'));
 });
 
+test('highest-ranked safe priority paper is chosen after a locale-unsafe candidate', () => {
+  const candidates = structuredClone(fixtureCandidates);
+  candidates[0].source.locale = 'zh';
+  for (const [index, item] of candidates.filter(entry => entry.category !== 'paper').entries()) {
+    item.source.locale = 'en';
+    item.source.id = `shared-${index % 2}`;
+  }
+  const highest = priorityCandidate({ id: 'priority-locale-unsafe', confidence: 0.785, sourceId: candidates[0].source.id });
+  const next = priorityCandidate({ id: 'priority-next-safe', confidence: 0.78, sourceId: 'priority-next-source' });
+  const options = { date: '2026-07-19', history: [], priorityInstitutionPaper: policy };
+  const result = selectDaily([...candidates, highest, next], options);
+  const reversed = selectDaily([next, highest, ...candidates].reverse(), options);
+  const audit = result.policy.priorityInstitutionPaper;
+
+  assert.deepEqual(result.selected.map(item => item.id), reversed.selected.map(item => item.id));
+  assert.deepEqual(audit, reversed.policy.priorityInstitutionPaper);
+  assert.equal(audit.eligibleCount, 2);
+  assert.equal(audit.selectedItemId, next.id);
+  assert.equal(audit.replacement.replacedItemId, 'paper-circular-material-20260717');
+  assert.ok(!result.selected.some(item => item.id === highest.id));
+  assert.equal(new Set(result.selected.map(item => item.id)).size, 6);
+  assert.deepEqual(new Set(result.selected.map(item => item.source.locale)), new Set(['zh', 'en']));
+  assert.equal(new Set(result.selected.map(item => item.source.id)).size, 4);
+  assert.ok(result.rejected.some(entry => entry.id === audit.replacement.replacedItemId && entry.reason === 'priority-institution-replacement'));
+});
+
 test('priority freshness, quality, dedupe and unsafe replacement use exact fallbacks', () => {
   const stale = selectDaily([...fixtureCandidates, priorityCandidate({ id: 'old-priority', date: '2026-07-10', confidence: 1 })], { date: '2026-07-19', history: [], priorityInstitutionPaper: policy });
   assert.equal(stale.policy.priorityInstitutionPaper.reason, 'outside-strict-freshness-window');
@@ -120,4 +146,6 @@ test('config bounds and report schema reject policy tampering', async () => {
   assert.throws(() => validateReport(badReplacement), /still appears/);
   const badCount = structuredClone(report); badCount.audit.selectionPolicy.priorityInstitutionPaper.eligibleCount = 0;
   assert.throws(() => validateReport(badCount));
+  const missingPriority = structuredClone(report); delete missingPriority.audit.selectionPolicy.priorityInstitutionPaper;
+  assert.throws(() => validateReport(missingPriority), /priorityInstitutionPaper required/);
 });

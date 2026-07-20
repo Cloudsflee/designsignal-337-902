@@ -79,6 +79,7 @@ export async function recoverReport(dataDir, date) {
 }
 
 export async function writeReport(dataDir, report) {
+  assertDate(report?.date);
   const reports = path.join(dataDir, 'reports'), finalDir = path.join(reports, report.date), lock = path.join(dataDir, 'locks', `${report.date}.lock`);
   return withLock(lock, async () => {
     const existing = await readReportRecordByDate(dataDir, report.date, { complete: true });
@@ -86,6 +87,8 @@ export async function writeReport(dataDir, report) {
       const status = await reconcileManifest(dataDir, existing.report, existing.json);
       return { status, dir: finalDir, report: existing.report };
     }
+    if (report.schemaVersion !== 3) throw new Error('new reports must use schema version 3');
+    validateReport(report);
     if (await exists(finalDir)) throw new Error(`incomplete report directory for ${report.date}`);
     await mkdir(reports, { recursive: true });
     const stage = path.join(reports, `.${report.date}.${process.pid}.staging`); await rm(stage, { recursive: true, force: true }); await mkdir(stage, { recursive: true });
@@ -109,6 +112,8 @@ export async function readHistory(dataDir) {
 export async function latestReport(dataDir) {
   try {
     const lines = (await readFile(path.join(dataDir, 'manifest.ndjson'), 'utf8')).trim().split('\n').filter(Boolean);
-    if (!lines.length) return null; const entry = JSON.parse(lines.at(-1)); return JSON.parse(await readFile(path.join(dataDir, entry.path), 'utf8'));
+    if (!lines.length) return null;
+    const entry = JSON.parse(lines.at(-1));
+    return validateReport(JSON.parse(await readFile(path.join(dataDir, entry.path), 'utf8')));
   } catch (error) { if (error.code === 'ENOENT') return null; throw error; }
 }

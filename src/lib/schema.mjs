@@ -67,8 +67,8 @@ function validateSelectionPolicy(policy, items, rejected) {
   for (const [reason, count] of Object.entries(priority.ineligibleReasons)) { text(reason, 'priorityInstitutionPaper.ineligibleReasons key', 200); integer(count, `priorityInstitutionPaper.ineligibleReasons.${reason}`, { min: 1, max: 100000 }); }
   if (!['satisfied-by-rank', 'quota-preserving-replacement', 'fallback'].includes(priority.decision)) throw new Error('invalid priorityInstitutionPaper decision');
   text(priority.reason, 'priorityInstitutionPaper.reason', 200);
-  if (priority.decision === 'satisfied-by-rank' && priority.reason !== 'best-eligible-priority-paper-already-selected') throw new Error('rank-satisfied priority reason is inconsistent');
-  if (priority.decision === 'quota-preserving-replacement' && priority.reason !== 'best-eligible-priority-paper-selected') throw new Error('priority replacement reason is inconsistent');
+  if (priority.decision === 'satisfied-by-rank' && priority.reason !== 'highest-ranked-safe-priority-paper-already-selected') throw new Error('rank-satisfied priority reason is inconsistent');
+  if (priority.decision === 'quota-preserving-replacement' && priority.reason !== 'highest-ranked-safe-priority-paper-selected') throw new Error('priority replacement reason is inconsistent');
   if (priority.decision === 'fallback') {
     const reasonValid = priority.reason === 'no-matching-priority-provenance'
       || priority.reason === 'all-priority-candidates-deduplicated'
@@ -220,7 +220,7 @@ export function validateSynthesis(value, items, evidence) {
 }
 
 export function validateReport(report) {
-  if (report.schemaVersion !== 3) throw new Error('unsupported report schema version');
+  if (![2, 3].includes(report.schemaVersion)) throw new Error('unsupported report schema version');
   if (!/^\d{4}-\d{2}-\d{2}$/.test(report.date)) throw new Error('invalid report date');
   if (!Array.isArray(report.items) || report.items.length !== 6) throw new Error('report must contain exactly six items');
   report.items.forEach(validateItem);
@@ -234,7 +234,9 @@ export function validateReport(report) {
   if (new Set(report.items.map(item => item.source.id)).size < 4) throw new Error('report requires at least four distinct sources');
   const locales = new Set(report.items.map(item => item.source.locale));
   if (!locales.has('zh') || !locales.has('en')) throw new Error('report requires zh-origin and en-origin sources');
-  validateSelectionPolicy(report.audit?.selectionPolicy, report.items, report.audit?.rejected);
+  // Schema v2 predates the priority-institution audit. Keep its original
+  // report contract while requiring the complete policy audit for v3.
+  if (report.schemaVersion === 3) validateSelectionPolicy(report.audit?.selectionPolicy, report.items, report.audit?.rejected);
   const evidenceShape = {
     sources: report.evidence.sources,
     exam337: { parts: [{ topics: report.evidence.allowedTopics?.['337'] || [] }] },

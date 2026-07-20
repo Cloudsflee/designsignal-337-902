@@ -6,8 +6,8 @@ import path from 'node:path';
 import { fixtureCandidates } from '../fixtures/daily.mjs';
 import { selectDaily } from '../src/lib/select.mjs';
 import { buildReport } from '../src/lib/report.mjs';
-import { appendManifestEntry, readReportByDate, writeReport } from '../src/lib/storage.mjs';
-import { atomicWrite, windowsAtomicReplace, withLock } from '../src/lib/util.mjs';
+import { appendManifestEntry, readReportByDate, recoverReport, writeReport } from '../src/lib/storage.mjs';
+import { atomicWrite, sha256, windowsAtomicReplace, withLock } from '../src/lib/util.mjs';
 import { queueDeliveries, retryOutbox } from '../src/lib/push.mjs';
 import { nextScheduledAt } from '../src/lib/scheduler.mjs';
 import { daily } from '../src/lib/daily.mjs';
@@ -462,6 +462,35 @@ test('complete report without a manifest is validated and reconciled once', asyn
   assert.equal(recovered.status, 'recovered'); assert.equal(again.status, 'exists');
   assert.deepEqual(await readReportByDate(dir, report.date), report);
   assert.equal((await readFile(path.join(dir, 'manifest.ndjson'), 'utf8')).trim().split('\n').length, 1);
+  await rm(dir, { recursive: true, force: true });
+});
+
+test('immutable schema v2 report reads and recovers under its legacy audit contract', async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), 'ds-v2-recover-'));
+  const report = await fixtureReport();
+  await writeReport(dir, report);
+  report.schemaVersion = 2;
+  delete report.audit.selectionPolicy.priorityInstitutionPaper;
+  const reportFile = path.join(dir, 'reports', report.date, 'report.json');
+  const storedJson = `${JSON.stringify(report, null, 2)}\n`;
+  await writeFile(reportFile, storedJson);
+  const storedHash = sha256(storedJson);
+  await rm(path.join(dir, 'manifest.ndjson'));
+
+  assert.deepEqual(await readReportByDate(dir, report.date), report);
+  const recovered = await recoverReport(dir, report.date);
+  assert.equal(recovered.status, 'recovered');
+  assert.deepEqual(recovered.report, report);
+  assert.equal(await readFile(reportFile, 'utf8'), storedJson);
+  const manifest = JSON.parse((await readFile(path.join(dir, 'manifest.ndjson'), 'utf8')).trim());
+  assert.equal(manifest.sha256, storedHash);
+  const manifestJson = await readFile(path.join(dir, 'manifest.ndjson'), 'utf8');
+  assert.equal((await recoverReport(dir, report.date)).status, 'exists');
+  assert.equal(await readFile(reportFile, 'utf8'), storedJson);
+  assert.equal(await readFile(path.join(dir, 'manifest.ndjson'), 'utf8'), manifestJson);
+  const publishDir = await mkdtemp(path.join(os.tmpdir(), 'ds-v2-publish-'));
+  await assert.rejects(() => writeReport(publishDir, report), /new reports must use schema version 3/);
+  await rm(publishDir, { recursive: true, force: true });
   await rm(dir, { recursive: true, force: true });
 });
 

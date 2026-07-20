@@ -2,9 +2,10 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 
-const compose = await readFile(new URL('../compose.yaml', import.meta.url), 'utf8');
-const studyProfileCompose = await readFile(new URL('../compose.study-profile.yaml', import.meta.url), 'utf8');
-const envExample = await readFile(new URL('../.env.example', import.meta.url), 'utf8');
+const normalizeLineEndings = value => value.replaceAll('\r\n', '\n');
+const compose = normalizeLineEndings(await readFile(new URL('../compose.yaml', import.meta.url), 'utf8'));
+const studyProfileCompose = normalizeLineEndings(await readFile(new URL('../compose.study-profile.yaml', import.meta.url), 'utf8'));
+const envExample = normalizeLineEndings(await readFile(new URL('../.env.example', import.meta.url), 'utf8'));
 
 function serviceBlock(name, nextSection) {
   const end = nextSection ? `(?=^  ${nextSection}:)` : '(?=^volumes:)';

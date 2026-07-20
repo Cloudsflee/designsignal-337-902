@@ -26,6 +26,7 @@ const invariantsHold = selected => {
   const counts = selected.reduce((all, item) => ({ ...all, [item.category]: (all[item.category] || 0) + 1 }), {});
   return Object.entries(quota).every(([category, needed]) => counts[category] === needed)
     && ['zh', 'en'].every(locale => selected.some(item => item.source.locale === locale))
+    && new Set(selected.map(item => item.id)).size === selected.length
     && new Set(selected.map(item => item.source.id)).size >= 4;
 };
 
@@ -161,35 +162,44 @@ export function selectDaily(candidates, { date, history = [], maxAgeDays = 60, p
   const qualifyingPriority = freshPriority.filter(entry => bestPaperScore - entry.score <= boundedPolicy.maxScoreGap).sort(tieBreak);
   priority.eligibleCount = qualifyingPriority.length;
   for (const entry of freshPriority.filter(candidate => !qualifyingPriority.includes(candidate))) priority.ineligibleReasons['score-gap-exceeds-limit'] = (priority.ineligibleReasons['score-gap-exceeds-limit'] || 0) + 1;
-  const rankedPriority = qualifyingPriority[0] && selected.some(item => item.id === qualifyingPriority[0].item.id) ? qualifyingPriority[0] : null;
-  if (rankedPriority) {
-    priority.decision = 'satisfied-by-rank';
-    priority.reason = 'best-eligible-priority-paper-already-selected';
-    priority.selectedItemId = rankedPriority.item.id;
-    priority.selectedSourceId = rankedPriority.item.source.id;
-    priority.selectedInstitution = rankedPriority.matched;
-  } else if (qualifyingPriority.length) {
-    const candidate = qualifyingPriority[0];
-    const outgoingOptions = selected
-      .filter(item => item.category === 'paper')
-      .map(item => ({ item, score: scored.find(entry => entry.item.id === item.id)?.score ?? -Infinity }))
-      .sort((a, b) => a.score - b.score || b.item.source.id.localeCompare(a.item.source.id) || b.item.id.localeCompare(a.item.id));
+  const outgoingOptions = selected
+    .filter(item => item.category === 'paper')
+    .map(item => ({ item, score: scored.find(entry => entry.item.id === item.id)?.score ?? -Infinity }))
+    .sort((a, b) => a.score - b.score || b.item.source.id.localeCompare(a.item.source.id) || b.item.id.localeCompare(a.item.id));
+  let safePriority = null;
+  for (const candidate of qualifyingPriority) {
+    if (selected.some(item => item.id === candidate.item.id)) {
+      safePriority = { candidate, outgoing: null };
+      break;
+    }
     const outgoing = outgoingOptions.find(option => {
       const prospective = selected.map(item => item.id === option.item.id ? candidate.item : item);
       return invariantsHold(prospective);
     });
     if (outgoing) {
-      const index = selected.findIndex(item => item.id === outgoing.item.id);
-      selected[index] = candidate.item;
-      usedSources.clear(); selected.forEach(item => usedSources.add(item.source.id));
-      priority.decision = 'quota-preserving-replacement';
-      priority.reason = 'best-eligible-priority-paper-selected';
-      priority.selectedItemId = candidate.item.id;
-      priority.selectedSourceId = candidate.item.source.id;
-      priority.selectedInstitution = candidate.matched;
-      priority.replacement = { replacedItemId: outgoing.item.id, replacedSourceId: outgoing.item.source.id };
-      reject(outgoing.item, 'priority-institution-replacement', { score: Number(outgoing.score.toFixed(2)) });
+      safePriority = { candidate, outgoing };
+      break;
     }
+  }
+  if (safePriority && !safePriority.outgoing) {
+    const { candidate } = safePriority;
+    priority.decision = 'satisfied-by-rank';
+    priority.reason = 'highest-ranked-safe-priority-paper-already-selected';
+    priority.selectedItemId = candidate.item.id;
+    priority.selectedSourceId = candidate.item.source.id;
+    priority.selectedInstitution = candidate.matched;
+  } else if (safePriority) {
+    const { candidate, outgoing } = safePriority;
+    const index = selected.findIndex(item => item.id === outgoing.item.id);
+    selected[index] = candidate.item;
+    usedSources.clear(); selected.forEach(item => usedSources.add(item.source.id));
+    priority.decision = 'quota-preserving-replacement';
+    priority.reason = 'highest-ranked-safe-priority-paper-selected';
+    priority.selectedItemId = candidate.item.id;
+    priority.selectedSourceId = candidate.item.source.id;
+    priority.selectedInstitution = candidate.matched;
+    priority.replacement = { replacedItemId: outgoing.item.id, replacedSourceId: outgoing.item.source.id };
+    reject(outgoing.item, 'priority-institution-replacement', { score: Number(outgoing.score.toFixed(2)) });
   }
   if (priority.decision === 'fallback') priority.reason = fallbackReason(priority, priorityRejected);
 

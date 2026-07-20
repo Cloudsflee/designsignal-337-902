@@ -71,7 +71,7 @@ test('cached route serves only hash-addressed verified assets', async () => {
 test('Codex TOML provider loads with environment precedence and redaction-safe errors', async () => {
   const dir = await mkdtemp(path.join(os.tmpdir(), 'ds-codex-')), file = path.join(dir, 'config.toml');
   const fixtureToml = await readFile(path.join(import.meta.dirname, '../fixtures/codex-config.toml'), 'utf8');
-  const [providerFixture, ignoredFixture] = fixtureToml.split('\n[ui]\n');
+  const [providerFixture, ignoredFixture] = fixtureToml.split(/\r?\n\[ui\]\r?\n/);
   const authSetting = ['experimental', 'bearer', 'token'].join('_');
   const auth = ['harmless', 'runtime', 'fixture', 'value'].join('-');
   const providerToml = [providerFixture, `${authSetting} = ${JSON.stringify(auth)}`, '[ui]', ignoredFixture].join('\n');
