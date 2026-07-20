@@ -47,7 +47,7 @@ test('atomicWrite retries transient replacement failures after sync and close', 
   const dir = await mkdtemp(path.join(os.tmpdir(), 'ds-atomic-retry-')), target = path.join(dir, 'target');
   await writeFile(target, 'old');
   const calls = [], delays = [];
-  let closed = false, attempts = 0, published;
+  let closed = false, attempts = 0, published, stats = 0, replacements = 0;
   const openImpl = async (...args) => {
     const handle = await open(...args);
     return {
@@ -62,9 +62,19 @@ test('atomicWrite retries transient replacement failures after sync and close', 
     if (++attempts < 3) throw Object.assign(new Error('temporarily locked'), { code: attempts === 1 ? 'EPERM' : 'EACCES' });
     published = { destination, content: await readFile(temp, 'utf8') };
   };
-  await atomicWrite(target, 'new', { openImpl, renameImpl, sleepImpl: async delay => delays.push(delay), nowImpl: () => 0 });
+  await atomicWrite(target, 'new', {
+    openImpl,
+    platform: 'linux',
+    renameImpl,
+    statImpl: async () => { stats++; },
+    replaceImpl: async () => { replacements++; },
+    sleepImpl: async delay => delays.push(delay),
+    nowImpl: () => 0
+  });
   assert.deepEqual(calls, ['write', 'sync', 'close', 'rename', 'rename', 'rename']);
   assert.deepEqual(delays, [5, 10]);
+  assert.equal(stats, 0);
+  assert.equal(replacements, 0);
   assert.deepEqual(published, { destination: target, content: 'new' });
   assert.deepEqual((await readdir(dir)).filter(name => name.endsWith('.tmp')), []);
   await rm(dir, { recursive: true, force: true });
@@ -236,7 +246,7 @@ test('windowsAtomicReplace performs a real synced replacement on Windows', { ski
   try {
     await writeSynced(source, 'new');
     await writeSynced(target, 'old');
-    await windowsAtomicReplace(source, target);
+    await windowsAtomicReplace(source, target, { platform: 'win32' });
     assert.equal(await readFile(target, 'utf8'), 'new');
     await assert.rejects(() => stat(source), error => error.code === 'ENOENT');
     assert.deepEqual((await readdir(dir)).filter(name => name.includes('.designsignal-replace-backup.')), []);
@@ -338,15 +348,24 @@ test('atomicWrite excludes the Windows fallback on other platforms', async () =>
 test('atomicWrite bounds transient rename retries and preserves the destination', async () => {
   const dir = await mkdtemp(path.join(os.tmpdir(), 'ds-atomic-exhaust-')), target = path.join(dir, 'target');
   await writeFile(target, 'old');
-  let attempts = 0;
+  let attempts = 0, stats = 0, replacements = 0;
   const delays = [];
   const failure = Object.assign(new Error('still busy'), { code: 'EBUSY' });
   await assert.rejects(
-    () => atomicWrite(target, 'new', { renameImpl: async () => { attempts++; throw failure; }, sleepImpl: async delay => delays.push(delay), nowImpl: () => 0 }),
+    () => atomicWrite(target, 'new', {
+      platform: 'linux',
+      renameImpl: async () => { attempts++; throw failure; },
+      statImpl: async () => { stats++; },
+      replaceImpl: async () => { replacements++; },
+      sleepImpl: async delay => delays.push(delay),
+      nowImpl: () => 0
+    }),
     error => error === failure
   );
   assert.equal(attempts, 25);
   assert.deepEqual(delays, [5, 10, 20, 40, 80, ...Array(19).fill(100)]);
+  assert.equal(stats, 0);
+  assert.equal(replacements, 0);
   assert.equal(await readFile(target, 'utf8'), 'old');
   assert.deepEqual((await readdir(dir)).filter(name => name.endsWith('.tmp')), []);
   await rm(dir, { recursive: true, force: true });
@@ -355,15 +374,20 @@ test('atomicWrite bounds transient rename retries and preserves the destination'
 test('atomicWrite stops transient retries at the elapsed-time cap', async () => {
   const dir = await mkdtemp(path.join(os.tmpdir(), 'ds-atomic-time-')), target = path.join(dir, 'target');
   await writeFile(target, 'old');
-  let attempts = 0, now = 0;
+  let attempts = 0, now = 0, stats = 0, replacements = 0;
   const failure = Object.assign(new Error('permission pending'), { code: 'EPERM' });
   await assert.rejects(() => atomicWrite(target, 'new', {
+    platform: 'linux',
     renameImpl: async () => { attempts++; now += 750; throw failure; },
+    statImpl: async () => { stats++; },
+    replaceImpl: async () => { replacements++; },
     sleepImpl: async delay => { now += delay; },
     nowImpl: () => now
   }), error => error === failure);
   assert.equal(attempts, 3);
   assert.equal(now, 2265);
+  assert.equal(stats, 0);
+  assert.equal(replacements, 0);
   assert.equal(await readFile(target, 'utf8'), 'old');
   assert.deepEqual((await readdir(dir)).filter(name => name.endsWith('.tmp')), []);
   await rm(dir, { recursive: true, force: true });
