@@ -25,7 +25,7 @@ export DESIGNSIGNAL_MODEL_MAX_OUTPUT_TOKENS=6000
 node src/cli.mjs daily
 ```
 
-An optional private study profile can be supplied with `DESIGNSIGNAL_STUDY_PROFILE_FILE=/absolute/path/profile.json`. Only `directions`, `weaknesses`, and `dailyMinutes` are accepted into model context; unknown fields are discarded and the file is read with a 16 KiB default limit.
+For a native CLI process, an optional private study profile can be supplied with `DESIGNSIGNAL_STUDY_PROFILE_FILE=/absolute/path/profile.json`. Docker uses the separate host variable and override described below. Only `directions`, `weaknesses`, and `dailyMinutes` are accepted into model context; unknown fields are discarded and the file is read with a 16 KiB default limit.
 
 ```json
 {
@@ -51,4 +51,4 @@ The fixture is synthetic, offline test material and is always labeled `fixture: 
 
 See [source policy](docs/SOURCE_POLICY.md), [operations](docs/OPERATIONS.md), and [calibration](docs/CALIBRATION.md). No generated live data or secrets belong in Git.
 
-The Docker Compose production baseline uses the host Codex TOML as a read-only scheduler secret, a stable persistent data volume, and a loopback-only dashboard. See [operations](docs/OPERATIONS.md#docker) for exact Windows/POSIX startup, provider checks, scheduling verification, and backup/restore commands.
+The Docker Compose production baseline uses the host Codex TOML as a read-only scheduler secret, a stable persistent data volume, and a loopback-only dashboard. The optional private profile uses the focused `compose.study-profile.yaml` override and its host-only `DESIGNSIGNAL_STUDY_PROFILE_HOST_FILE`; base Compose remains the no-profile default. See [operations](docs/OPERATIONS.md#docker) for exact Windows/POSIX startup, profile removal, provider checks, scheduling verification, and backup/restore commands.

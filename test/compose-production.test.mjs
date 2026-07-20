@@ -3,6 +3,8 @@ import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 
 const compose = await readFile(new URL('../compose.yaml', import.meta.url), 'utf8');
+const studyProfileCompose = await readFile(new URL('../compose.study-profile.yaml', import.meta.url), 'utf8');
+const envExample = await readFile(new URL('../.env.example', import.meta.url), 'utf8');
 
 function serviceBlock(name, nextSection) {
   const end = nextSection ? `(?=^  ${nextSection}:)` : '(?=^volumes:)';
@@ -13,6 +15,29 @@ function serviceBlock(name, nextSection) {
 
 const dashboard = serviceBlock('dashboard', 'scheduler');
 const scheduler = serviceBlock('scheduler');
+
+test('base Compose keeps the no-profile default without forwarding host paths', () => {
+  assert.doesNotMatch(compose, /DESIGNSIGNAL_STUDY_PROFILE_(?:FILE|HOST_FILE)/);
+  assert.doesNotMatch(compose, /designsignal_study_profile/);
+});
+
+test('optional profile override requires one host file and exposes a fixed read-only secret', () => {
+  assert.match(studyProfileCompose, /^services:\n  scheduler:\n/m);
+  assert.doesNotMatch(studyProfileCompose, /^  dashboard:$/m);
+  assert.match(studyProfileCompose, /^      DESIGNSIGNAL_STUDY_PROFILE_FILE: \/run\/secrets\/designsignal_study_profile$/m);
+  assert.match(studyProfileCompose, /^    secrets:\n      - source: designsignal_study_profile\n        target: designsignal_study_profile\n        mode: 0444$/m);
+  assert.match(studyProfileCompose, /^secrets:\n  designsignal_study_profile:\n    file: "\$\{DESIGNSIGNAL_STUDY_PROFILE_HOST_FILE:\?[^}]+\}"$/m);
+  assert.equal([...studyProfileCompose.matchAll(/^      - source: designsignal_study_profile$/gm)].length, 1);
+  assert.equal([...studyProfileCompose.matchAll(/^    file: /gm)].length, 1);
+  assert.match(envExample, /^DESIGNSIGNAL_STUDY_PROFILE_HOST_FILE=$/m);
+  assert.doesNotMatch(envExample, /^DESIGNSIGNAL_STUDY_PROFILE_FILE=/m);
+});
+
+test('optional profile override contains no profile data or production identity changes', () => {
+  assert.doesNotMatch(studyProfileCompose, /directions|weaknesses|dailyMinutes|\{\s*"/);
+  assert.doesNotMatch(studyProfileCompose, /^name:|image:|container_name:|volumes:|designsignal-data|\/data(?:$|:)/m);
+  assert.doesNotMatch(studyProfileCompose, /\.\.\/|:\/run\/secrets|:\/protected|:\/home|[A-Za-z]:\\/);
+});
 
 test('Compose mounts only the selected host Codex file as the scheduler secret', () => {
   assert.match(compose, /^secrets:\n  codex_config:\n    file: "\$\{DESIGNSIGNAL_CODEX_CONFIG_FILE:-\$\{USERPROFILE\}\/\.codex\/config\.toml\}"$/m);

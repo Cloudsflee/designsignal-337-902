@@ -6,7 +6,7 @@ Run `node src/cli.mjs doctor`, provide model credentials through the process env
 
 Set `DESIGNSIGNAL_MODEL_CONCURRENCY` to an integer from 1 through 4 (default 2), `DESIGNSIGNAL_MODEL_TIMEOUT_MS` to an integer from 10000 through 600000 (default 180000), and `DESIGNSIGNAL_MODEL_MAX_OUTPUT_TOKENS` to an integer from 256 through 32768 (default 6000). The model timeout is independent of public-source network timeouts. Each live run analyzes six items with bounded concurrency while preserving selection order, then starts one separate synthesis call only after all six succeed. Timeout and network failures, HTTP 429, and HTTP 5xx are attempted at most three times with capped exponential backoff; numeric `Retry-After` values are honored up to 30 seconds, while other HTTP 4xx responses stop immediately. The synthesis call receives clipped item analysis, the allowed official exam taxonomy and links, a whitelisted optional study profile, and only the recent bounded feedback window. Malformed output or invented IDs, topics, or citations is retried three times and then fails the run with redacted errors. Model requests disable provider storage with `store: false`.
 
-`DESIGNSIGNAL_STUDY_PROFILE_FILE` may point to a protected JSON file containing only `directions` (string array), `weaknesses` (string array), and `dailyMinutes` (10-720). Keep the profile outside version control. Feedback is appended with mode `0600` to `data/feedback.ndjson`; invalid dates, score ranges, minutes, oversized notes, and excessive weak-point lists are rejected with HTTP 400.
+For a native CLI process, `DESIGNSIGNAL_STUDY_PROFILE_FILE` may point to a protected JSON file containing the profile schema described under Docker below. Keep the profile outside version control. Feedback is appended with mode `0600` to `data/feedback.ndjson`; invalid dates, score ranges, minutes, oversized notes, and excessive weak-point lists are rejected with HTTP 400.
 
 Missing webhook endpoints are normal: the report remains published and each generic/Feishu/WeCom delivery stays pending with `missing-secret-or-endpoint`. Add the endpoint to the environment and run `node src/cli.mjs push retry`. Failures use capped exponential retry timestamps and never store the endpoint or secret in job files.
 
@@ -46,6 +46,60 @@ test -r "${DESIGNSIGNAL_CODEX_CONFIG_FILE:-$USERPROFILE/.codex/config.toml}"
 docker compose config --quiet
 docker compose up --detach --build
 docker compose ps
+```
+
+### Optional study profile
+
+The base `compose.yaml` runs without a study profile and does not pass a host profile path into the container. To opt in, add `compose.study-profile.yaml` and set the host-only `DESIGNSIGNAL_STUDY_PROFILE_HOST_FILE`. The override mounts that JSON file alone as a read-only Compose secret at `/run/secrets/designsignal_study_profile`; it does not mount the parent directory. Inside the scheduler, `DESIGNSIGNAL_STUDY_PROFILE_FILE` is always that fixed Linux path. The host-only variable is intentionally different from the native CLI variable, whose semantics remain unchanged.
+
+The profile must be a JSON object no larger than 16 KiB by default. `directions` and `weaknesses` are optional arrays with at most 12 non-empty strings each and at most 240 characters per string. `dailyMinutes` is required and must be an integer from 10 through 720. Only those three fields enter model context; unknown fields are discarded. Keep the file private and outside the repository and image.
+
+On Windows PowerShell, set an absolute host file and start with both Compose files:
+
+```powershell
+$env:DESIGNSIGNAL_STUDY_PROFILE_HOST_FILE = (Resolve-Path "C:\protected\designsignal\study-profile.json").Path
+if (-not (Test-Path $env:DESIGNSIGNAL_STUDY_PROFILE_HOST_FILE -PathType Leaf)) { throw "Study profile file not found" }
+docker compose -f compose.yaml -f compose.study-profile.yaml config --quiet
+docker compose -f compose.yaml -f compose.study-profile.yaml up --detach --build
+docker compose -f compose.yaml -f compose.study-profile.yaml ps
+```
+
+After changing the path or file, recreate the scheduler with both files:
+
+```powershell
+docker compose -f compose.yaml -f compose.study-profile.yaml up --detach --force-recreate scheduler
+```
+
+On POSIX, use the same two-file startup and recreation flow:
+
+```sh
+export DESIGNSIGNAL_STUDY_PROFILE_HOST_FILE=/absolute/protected/path/study-profile.json
+test -f "$DESIGNSIGNAL_STUDY_PROFILE_HOST_FILE"
+docker compose -f compose.yaml -f compose.study-profile.yaml config --quiet
+docker compose -f compose.yaml -f compose.study-profile.yaml up --detach --build
+docker compose -f compose.yaml -f compose.study-profile.yaml ps
+```
+
+```sh
+docker compose -f compose.yaml -f compose.study-profile.yaml up --detach --force-recreate scheduler
+```
+
+The profile is independent of provider selection. The existing `/run/secrets/codex_config` secret and the `OPENAI_*` precedence described below continue to work with the override; the profile adds synthesis context but no model URL or credential.
+
+To return to no-profile mode, recreate only the scheduler from base Compose. This preserves the stable `designsignal-data` volume and all reports, feedback, cache, and outbox state. PowerShell:
+
+```powershell
+Remove-Item Env:DESIGNSIGNAL_STUDY_PROFILE_HOST_FILE -ErrorAction SilentlyContinue
+docker compose -f compose.yaml up --detach --force-recreate scheduler
+docker compose -f compose.yaml ps
+```
+
+POSIX:
+
+```sh
+unset DESIGNSIGNAL_STUDY_PROFILE_HOST_FILE
+docker compose -f compose.yaml up --detach --force-recreate scheduler
+docker compose -f compose.yaml ps
 ```
 
 Verify the selected provider without printing its model URL or credential. The output contains only the provider name and booleans; with Codex TOML it should show that TOML's `model_provider`, `modelConfigured: true`, and `responsesApi: true`:
