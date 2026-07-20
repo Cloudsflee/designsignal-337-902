@@ -139,7 +139,7 @@ test('dashboard HTML has a continuous heading outline and retains interactive mo
   for (let index = 1; index < headingLevels.length; index++) {
     assert.ok(headingLevels[index] <= headingLevels[index - 1] + 1, `heading jumped from h${headingLevels[index - 1]} to h${headingLevels[index]}`);
   }
-  assert.match(html, /<section class="band thesis"><h2>核心论点与证据边界 \/ Thesis and evidence boundary<\/h2>/);
+  assert.match(html, /<section class="band thesis" id="overview" data-toc-target><h2>核心论点与证据边界 \/ Thesis and evidence boundary<\/h2>/);
   assert.match(html, /<article class="signal"[^>]*>[\s\S]*?<h3>/);
   assert.match(html, /<details class="analysis"><summary><h4>/);
   assert.match(html, /<details class="provenance"><summary><h4>[\s\S]*?<h5>Citations<\/h5>/);
@@ -149,7 +149,7 @@ test('dashboard HTML has a continuous heading outline and retains interactive mo
   assert.match(html, /<form method="post" action="\/api\/feedback">/);
   for (const name of ['date', 'comprehension', 'transfer', 'exercise', 'minutes', 'weakPoints', 'note']) assert.match(html, new RegExp(`name="${name}"`));
   assert.match(html, /table-layout:fixed/);
-  assert.match(html, /@media\(max-width:820px\)\{\.page\{grid-template-columns:1fr\}/);
+  assert.match(html, /@media\(max-width:820px\)[\s\S]*?\.page\{grid-template-columns:1fr\}/);
   assert.match(html, /nav\{width:100%;margin:0;overflow:auto\}/);
   assert.match(html, /\.signal-head,\.analysis-grid,\.provenance-grid,\.exercise-grid,\.coverage-grid\{grid-template-columns:1fr\}/);
   assert.match(html, /@media\(max-width:430px\).*\.scores\{grid-template-columns:1fr\}/);

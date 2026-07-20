@@ -8,7 +8,112 @@ import { loadExamEvidence } from './evidence.mjs';
 import { appendFeedback, validateFeedback } from './study.mjs';
 import { exposeDeliveryJob } from './push.mjs';
 
-const APP_JS = `document.querySelectorAll('[data-filter]').forEach(b=>b.onclick=()=>{document.querySelectorAll('[data-filter]').forEach(x=>x.setAttribute('aria-pressed',String(x===b)));document.querySelectorAll('.signal').forEach(x=>x.classList.toggle('hidden',b.dataset.filter!=='all'&&x.dataset.category!==b.dataset.filter))})`;
+export const APP_JS = `(() => {
+  const filterButtons = [...document.querySelectorAll('[data-filter]')];
+  const signals = [...document.querySelectorAll('.signal')];
+  const toc = document.querySelector('[data-toc-target]') && document.getElementById('report-toc');
+  const openButton = document.querySelector('[data-toc-open]');
+  const closeButton = document.querySelector('[data-toc-close]');
+  const backdrop = document.querySelector('[data-toc-backdrop]');
+  const backToTop = document.querySelector('[data-back-to-top]');
+  const mobile = window.matchMedia('(max-width: 820px)');
+  const reducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)');
+  let returnFocus = null;
+  let currentFromPosition = () => {};
+
+  filterButtons.forEach(button => button.addEventListener('click', () => {
+    filterButtons.forEach(candidate => candidate.setAttribute('aria-pressed', String(candidate === button)));
+    signals.forEach(signal => signal.classList.toggle('hidden', button.dataset.filter !== 'all' && signal.dataset.category !== button.dataset.filter));
+    currentFromPosition();
+  }));
+
+  const setDrawer = (open, restoreFocus = true) => {
+    if (!toc || !openButton || !backdrop) return;
+    const drawerOpen = Boolean(open && mobile.matches);
+    toc.classList.toggle('is-open', drawerOpen);
+    openButton.setAttribute('aria-expanded', String(drawerOpen));
+    document.body.classList.toggle('drawer-open', drawerOpen);
+    backdrop.hidden = !drawerOpen;
+    toc.toggleAttribute('inert', mobile.matches && !drawerOpen);
+    if (mobile.matches) toc.setAttribute('aria-hidden', String(!drawerOpen));
+    else toc.removeAttribute('aria-hidden');
+    if (drawerOpen) {
+      returnFocus = document.activeElement;
+      closeButton?.focus();
+    } else if (restoreFocus && returnFocus instanceof HTMLElement) {
+      returnFocus.focus();
+      returnFocus = null;
+    }
+  };
+
+  openButton?.addEventListener('click', () => setDrawer(true));
+  closeButton?.addEventListener('click', () => setDrawer(false));
+  backdrop?.addEventListener('click', () => setDrawer(false));
+  document.addEventListener('keydown', event => {
+    if (!toc?.classList.contains('is-open')) return;
+    if (event.key === 'Escape') setDrawer(false);
+    if (event.key === 'Tab') {
+      const focusable = [...toc.querySelectorAll('a[href], button:not([disabled])')];
+      const first = focusable[0], last = focusable.at(-1);
+      if (event.shiftKey && document.activeElement === first) { event.preventDefault(); last?.focus(); }
+      else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first?.focus(); }
+    }
+  });
+  toc?.querySelectorAll('a[href^="#"]').forEach(link => link.addEventListener('click', () => {
+    const target = document.getElementById(link.hash.slice(1));
+    setDrawer(false, false);
+    if (mobile.matches && target) requestAnimationFrame(() => {
+      target.setAttribute('tabindex', '-1');
+      target.focus({ preventScroll: true });
+    });
+  }));
+  const syncDrawer = () => setDrawer(false, false);
+  mobile.addEventListener?.('change', syncDrawer);
+  setDrawer(false, false);
+
+  const links = toc ? [...toc.querySelectorAll('a[href^="#"]')] : [];
+  const targets = links.map(link => document.getElementById(decodeURIComponent(link.hash.slice(1))));
+  const setCurrent = target => links.forEach(link => {
+    if (target && link.hash === '#' + target.id) link.setAttribute('aria-current', 'location');
+    else link.removeAttribute('aria-current');
+  });
+  currentFromPosition = () => {
+    const offset = (document.querySelector('header')?.offsetHeight || 0) + 24;
+    let current = targets.find(Boolean)?.id ? targets.find(Boolean) : null;
+    targets.forEach(target => {
+      if (target && !target.closest('.hidden') && target.getBoundingClientRect().top <= offset) current = target;
+    });
+    setCurrent(current);
+  };
+
+  if ('IntersectionObserver' in window) {
+    const visible = new Map();
+    const observer = new IntersectionObserver(entries => {
+      entries.forEach(entry => entry.isIntersecting ? visible.set(entry.target, entry.boundingClientRect.top) : visible.delete(entry.target));
+      const nearest = [...visible].filter(([target]) => !target.closest('.hidden')).sort((a, b) => Math.abs(a[1]) - Math.abs(b[1]))[0]?.[0];
+      if (nearest) setCurrent(nearest);
+      else currentFromPosition();
+    }, { rootMargin: '-80px 0px -65% 0px', threshold: [0, 0.01] });
+    targets.filter(Boolean).forEach(target => observer.observe(target));
+  } else {
+    window.addEventListener('scroll', currentFromPosition, { passive: true });
+  }
+
+  const revealBackToTop = () => { if (backToTop) backToTop.hidden = window.scrollY < 600; };
+  window.addEventListener('scroll', revealBackToTop, { passive: true });
+  backToTop?.addEventListener('click', () => window.scrollTo({ top: 0, behavior: reducedMotion.matches ? 'auto' : 'smooth' }));
+  const hashTarget = () => {
+    try { return location.hash && document.getElementById(decodeURIComponent(location.hash.slice(1))); }
+    catch { return null; }
+  };
+  window.addEventListener('hashchange', () => {
+    const target = hashTarget();
+    if (target) { target.scrollIntoView({ block: 'start', behavior: 'auto' }); setCurrent(target); }
+  });
+  if (location.hash) requestAnimationFrame(() => window.dispatchEvent(new HashChangeEvent('hashchange')));
+  currentFromPosition();
+  revealBackToTop();
+})();`;
 const headers = {
   'x-content-type-options': 'nosniff', 'x-frame-options': 'DENY', 'referrer-policy': 'no-referrer',
   'permissions-policy': 'camera=(), microphone=(), geolocation=()',
