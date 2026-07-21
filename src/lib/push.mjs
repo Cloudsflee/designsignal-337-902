@@ -1,9 +1,10 @@
 import path from 'node:path';
 import { mkdir, readdir, readFile } from 'node:fs/promises';
 import { atomicWrite, sha256 } from './util.mjs';
-import { assertSafeUrl, readBoundedBody } from './network.mjs';
+import { HttpStatusError, safeFetch } from './network.mjs';
 import { readReportByDate } from './storage.mjs';
 import { renderFeishuBlocks } from './render.mjs';
+import { queueWebhookDeliveries, retryWebhookOutbox } from './webhook.mjs';
 
 const CHANNEL = 'feishu-document';
 const JOB_VERSION = 1;
@@ -52,7 +53,7 @@ export function exposeDeliveryJob(job, config) {
   return exposed;
 }
 
-export async function queueDeliveries(dataDir, report, config) {
+async function queueDocumentDelivery(dataDir, report, config) {
   const dir = path.join(dataDir, 'outbox');
   await mkdir(dir, { recursive: true });
   const createdAt = new Date().toISOString();
@@ -94,22 +95,19 @@ class DeliveryFailure extends Error {
 
 async function requestJson(url, init, config, ctx, phase, { remoteSideEffect = false } = {}) {
   const policy = { ...config.network, allowHosts: [...new Set([...(config.network.allowHosts || []), new URL(API_ORIGIN).hostname])] };
-  try { await assertSafeUrl(url, policy, ctx); }
-  catch { throw new DeliveryFailure(DEFINITE_FAILURE); }
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), config.network.timeoutMs);
+  let response;
   try {
-    let response;
-    try { response = await (ctx.fetchImpl || fetch)(url, { ...init, redirect: 'error', signal: controller.signal }); }
-    catch { throw new DeliveryFailure(`${phase}-${remoteSideEffect ? 'ambiguous' : 'unavailable'}`, { ambiguous: remoteSideEffect }); }
-    if (response.status >= 500 || response.status === 408) throw new DeliveryFailure(`${phase}-${remoteSideEffect ? 'ambiguous' : 'unavailable'}`, { ambiguous: remoteSideEffect });
-    if (!response.ok) throw new DeliveryFailure(DEFINITE_FAILURE);
-    let data;
-    try { data = JSON.parse((await readBoundedBody(response, config.network.maxJsonBytes)).toString('utf8')); }
-    catch { throw new DeliveryFailure(`${phase}-${remoteSideEffect ? 'ambiguous' : 'invalid'}`, { ambiguous: remoteSideEffect }); }
-    if (data?.code !== 0) throw new DeliveryFailure(DEFINITE_FAILURE);
-    return data;
-  } finally { clearTimeout(timer); }
+    response = await safeFetch(url, policy, { ...ctx, ...init, retries: 0, maxBytes: config.network.maxJsonBytes });
+  } catch (error) {
+    if (error instanceof HttpStatusError && !error.retryable) throw new DeliveryFailure(DEFINITE_FAILURE);
+    if (/unsafe URL|allowlisted|private or unresolved/.test(error?.message || '')) throw new DeliveryFailure(DEFINITE_FAILURE);
+    throw new DeliveryFailure(`${phase}-${remoteSideEffect ? 'ambiguous' : 'unavailable'}`, { ambiguous: remoteSideEffect });
+  }
+  let data;
+  try { data = JSON.parse(response.body.toString('utf8')); }
+  catch { throw new DeliveryFailure(`${phase}-${remoteSideEffect ? 'ambiguous' : 'invalid'}`, { ambiguous: remoteSideEffect }); }
+  if (data?.code !== 0) throw new DeliveryFailure(DEFINITE_FAILURE);
+  return data;
 }
 
 const headers = token => ({ 'content-type': 'application/json; charset=utf-8', ...(token ? { authorization: `Bearer ${token}` } : {}), 'user-agent': 'DesignSignal/1.0' });
@@ -200,7 +198,7 @@ async function runJob(job, file, report, config, ctx) {
   }
 }
 
-export async function retryOutbox(dataDir, config, ctx = {}) {
+async function retryDocumentOutbox(dataDir, config, ctx = {}) {
   const dir = path.join(dataDir, 'outbox'); let files;
   try { files = await readdir(dir); } catch (error) { if (error.code === 'ENOENT') return []; throw error; }
   const results = [];
@@ -232,4 +230,16 @@ export async function retryOutbox(dataDir, config, ctx = {}) {
     results.push(exposeDeliveryJob(job, config));
   }
   return results;
+}
+
+export async function queueDeliveries(dataDir, report, config) {
+  const document = await queueDocumentDelivery(dataDir, report, config);
+  const webhooks = await queueWebhookDeliveries(dataDir, report, config);
+  return [...document, ...webhooks];
+}
+
+export async function retryOutbox(dataDir, config, ctx = {}) {
+  const document = await retryDocumentOutbox(dataDir, config, ctx);
+  const webhooks = await retryWebhookOutbox(dataDir, config, ctx);
+  return [...document, ...webhooks];
 }

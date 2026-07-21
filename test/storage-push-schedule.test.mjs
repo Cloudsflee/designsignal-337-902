@@ -503,7 +503,7 @@ test('daily recovers report and manifest before collection and recreates only mi
   const first = await daily(config, { date: report.date, ctx }), second = await daily(config, { date: report.date, ctx });
   assert.equal(first.status, 'exists'); assert.equal(second.status, 'exists'); assert.equal(networkCalls, 0);
   assert.equal((await readFile(path.join(dir, 'manifest.ndjson'), 'utf8')).trim().split('\n').length, 1);
-  assert.equal((await readdir(path.join(dir, 'outbox'))).length, 1);
+  assert.equal((await readdir(path.join(dir, 'outbox'))).length, 4);
   await rm(dir, { recursive: true, force: true });
 });
 
@@ -545,12 +545,14 @@ test('23:50 Shanghai calculation is exact from UTC', () => {
   assert.equal(nextScheduledAt(new Date('2026-01-01T15:50:30Z'), 'Asia/Shanghai').toISOString(), '2026-01-02T15:50:00.000Z');
 });
 
-test('push outbox queues one pending Feishu document when configuration is missing', async () => {
+test('push outbox queues four pending delivery identities when configuration is missing', async () => {
   const dir = await mkdtemp(path.join(os.tmpdir(), 'ds-push-')), report = await fixtureReport();
   const base = { network: { allowHosts: [], timeoutMs: 100, retries: 0 }, push: { generic: '', feishu: '', wecom: '' } };
   const jobs = await queueDeliveries(dir, report, base);
-  assert.equal(jobs.length, 1); assert.equal(jobs[0].channel, 'feishu-document'); assert.match(jobs[0].reason, /missing/);
-  assert.ok(!('payload' in jobs[0]) && !('endpoint' in jobs[0]));
+  assert.deepEqual(jobs.map(job => job.channel), ['feishu-document', 'generic', 'feishu', 'wecom']);
+  assert.ok(jobs.every(job => job.state === 'pending' && /missing/.test(job.reason)));
+  assert.ok(!('payload' in jobs[0]) && jobs.slice(1).every(job => 'payload' in job));
+  assert.ok(jobs.every(job => !('endpoint' in job)));
   await rm(dir, { recursive: true, force: true });
 });
 
@@ -580,11 +582,12 @@ test('queueDeliveries preserves an existing document job and rejects identity co
   const dir = await mkdtemp(path.join(os.tmpdir(), 'ds-push-preserve-')), report = await fixtureReport();
   const config = { network: { allowHosts: [], timeoutMs: 100, retries: 0 }, push: { generic: '', feishu: '', wecom: '' } };
   const documentId = ['doc', 'cn', 'fixture', '1234'].join('');
-  const jobs = await queueDeliveries(dir, report, config), delivered = { ...jobs[0], state: 'delivered', reason: '', documentId, revisionId: 2, nextBlockIndex: jobs[0].totalBlocks, deliveredAt: '2026-07-19T12:00:00.000Z' };
+  const jobs = await queueDeliveries(dir, report, config), document = jobs.find(job => job.channel === 'feishu-document');
+  const delivered = { ...document, state: 'delivered', reason: '', documentId, revisionId: 2, nextBlockIndex: document.totalBlocks, deliveredAt: '2026-07-19T12:00:00.000Z' };
   await atomicWrite(path.join(dir, 'outbox', `${delivered.id}.json`), `${JSON.stringify(delivered, null, 2)}\n`);
   await queueDeliveries(dir, report, config);
   const stored = JSON.parse(await readFile(path.join(dir, 'outbox', `${delivered.id}.json`), 'utf8'));
-  assert.deepEqual(stored, delivered); assert.equal((await readdir(path.join(dir, 'outbox'))).length, 1);
+  assert.deepEqual(stored, delivered); assert.equal((await readdir(path.join(dir, 'outbox'))).length, 4);
   const conflicting = { ...stored, reportDate: '2026-07-20' };
   await atomicWrite(path.join(dir, 'outbox', `${delivered.id}.json`), `${JSON.stringify(conflicting)}\n`);
   await assert.rejects(() => queueDeliveries(dir, report, config), /conflicting outbox job identity/);

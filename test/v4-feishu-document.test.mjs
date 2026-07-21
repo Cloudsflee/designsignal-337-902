@@ -127,10 +127,10 @@ test('one document identity is queued while legacy jobs remain byte-for-byte unt
     await atomicWrite(path.join(dir, 'outbox', 'legacy.json'), legacy);
     const config = { feishuDocument: { appId: '', appSecret: '', folderToken: '', tenantBaseUrl: 'https://feishu.cn' } };
     const first = await queueDeliveries(dir, report, config), second = await queueDeliveries(dir, report, config);
-    assert.equal(first.length, 1);
+    assert.equal(first.length, 4);
     assert.equal(second[0].id, first[0].id);
     assert.equal(first[0].channel, 'feishu-document');
-    assert.equal((await readdir(path.join(dir, 'outbox'))).length, 2);
+    assert.equal((await readdir(path.join(dir, 'outbox'))).length, 5);
     assert.equal(await readFile(path.join(dir, 'outbox', 'legacy.json'), 'utf8'), legacy);
     await retryOutbox(dir, config);
     assert.equal(await readFile(path.join(dir, 'outbox', 'legacy.json'), 'utf8'), legacy);

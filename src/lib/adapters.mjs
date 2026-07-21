@@ -1,5 +1,6 @@
 import { fetchJson, safeFetch } from './network.mjs';
 import { sha256 } from './util.mjs';
+import { listingEntries } from './listing.mjs';
 
 const entities = value => String(value || '').replace(/<!\[CDATA\[([\s\S]*?)\]\]>/g, '$1').replace(/<[^>]+>/g, ' ').replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&quot;/g, '"').replace(/&#39;|&apos;/g, "'").replace(/\s+/g, ' ').trim();
 const tag = (xml, names) => {
@@ -146,50 +147,11 @@ export async function pageAdapter(source, config, ctx = {}) {
   return [raw(source, { url, title, summary: description, locale: language.locale, languageProvenance: language.provenance, publishedAt, authors: [], institution: source.id, imageUrl, rights: { access: 'public-page', licenseStatus: 'linked-only' } })];
 }
 
-const dated = value => {
-  const source = entities(value);
-  const match = source.match(/\b(20\d{2})[年/.\-](0?[1-9]|1[0-2])[月/.\-](0?[1-9]|[12]\d|3[01])日?\b/);
-  if (match) return `${match[1]}-${match[2].padStart(2, '0')}-${match[3].padStart(2, '0')}`;
-  const months = { jan: '01', feb: '02', mar: '03', apr: '04', may: '05', jun: '06', jul: '07', aug: '08', sep: '09', oct: '10', nov: '11', dec: '12' };
-  const regular = source.match(/\b([A-Za-z]{3,9})\s+(\d{1,2}),?\s+(20\d{2})\b/);
-  if (regular) { const month = months[regular[1].slice(0, 3).toLowerCase()]; if (month) return `${regular[3]}-${month}-${regular[2].padStart(2, '0')}`; }
-  const reversed = source.match(/\b(\d{1,2})\s+([A-Za-z]{3,9})\s+(20\d{2})\b/);
-  if (reversed) { const month = months[reversed[2].slice(0, 3).toLowerCase()]; if (month) return `${reversed[3]}-${month}-${reversed[1].padStart(2, '0')}`; }
-  return '';
-};
-
-const hrefFrom = anchor => anchor.match(/\bhref\s*=\s*["']([^"']+)["']/i)?.[1] || '';
-const titleFrom = anchor => entities(anchor.match(/\btitle\s*=\s*["']([^"']+)["']/i)?.[1] || anchor.replace(/^<a\b[^>]*>|<\/a>$/gi, ''));
-
 export async function listingAdapter(source, config, ctx = {}) {
-  const { body, url: listingUrl } = await safeFetch(source.url, config.network, { ...ctx, maxBytes: config.network.maxPageBytes, accept: 'text/html, application/xhtml+xml' });
-  const html = body.toString('utf8');
-  const anchors = [...html.matchAll(/<a\b[^>]*>[\s\S]{0,4000}?<\/a>/gi)];
-  const candidates = [];
-  for (const [index, match] of anchors.entries()) {
-    const anchor = match[0], anchorStart = match.index, anchorEnd = anchorStart + anchor.length;
-    const previousEnd = index ? anchors[index - 1].index + anchors[index - 1][0].length : 0;
-    const nextStart = anchors[index + 1]?.index ?? html.length;
-    const windowStart = Math.max(previousEnd, anchorStart - 1200);
-    const windowEnd = Math.min(nextStart, anchorEnd + 1200);
-    const section = html.slice(windowStart, windowEnd);
-    const publishedAt = dated(section);
-    if (!publishedAt) continue;
-    const href = hrefFrom(anchor), title = titleFrom(anchor);
-    if (!href || !title || /^(?:javascript:|mailto:|#)/i.test(href)) continue;
-    let articleUrl;
-    try {
-      articleUrl = new URL(href, listingUrl);
-      if (!['http:', 'https:'].includes(articleUrl.protocol) || articleUrl.username || articleUrl.password || !config.network.allowHosts.includes(articleUrl.hostname.toLowerCase())) continue;
-    } catch { continue; }
-    const imageRef = section.match(/<img\b[^>]+(?:src|data-src)=["']([^"']+)["']/i)?.[1];
-    let imageUrl = '';
-    try { if (imageRef) imageUrl = new URL(imageRef, listingUrl).href; } catch {}
-    const summary = entities(section).slice(0, 1500);
-    const language = candidateLanguage({ title, summary, configuredLocale: source.locale, allowConfiguredFallback: true });
-    candidates.push(raw(source, { url: articleUrl.href, title, summary, locale: language.locale, languageProvenance: language.provenance, publishedAt, authors: [], institution: source.institution || source.name || source.id, imageUrl, rights: { access: 'public-page', licenseStatus: 'linked-only' } }));
-  }
-  return [...new Map(candidates.map(x => [x.source.url, x])).values()].slice(0, 30);
+  return (await listingEntries(source, config, ctx)).map(entry => {
+    const language = candidateLanguage({ title: entry.title, summary: entry.summary, configuredLocale: source.locale, allowConfiguredFallback: true });
+    return raw(source, { ...entry, locale: language.locale, languageProvenance: language.provenance, authors: [], institution: source.institution || source.name || source.id, rights: { access: 'public-page', licenseStatus: 'linked-only' } });
+  });
 }
 
 export const adapters = { openalex: openAlexAdapter, arxiv: arxivAdapter, feed: feedAdapter, page: pageAdapter, listing: listingAdapter };

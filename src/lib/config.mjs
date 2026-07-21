@@ -84,6 +84,16 @@ async function loadCodexConfig(env) {
   }
 }
 
+function webhookUrl(value) {
+  if (value === undefined || value === null || value === '') return '';
+  try {
+    if (typeof value !== 'string') throw new Error();
+    const url = new URL(value);
+    if (url.protocol !== 'https:' || url.username || url.password || url.hash) throw new Error();
+    return url.href;
+  } catch { throw new Error('invalid webhook URL'); }
+}
+
 export async function loadConfig({ configPath, env = process.env } = {}) {
   const defaults = await readJson(path.join(ROOT, 'config/default.json'));
   let explicit = {};
@@ -115,6 +125,11 @@ export async function loadConfig({ configPath, env = process.env } = {}) {
     openAlex: {
       apiKey: env.OPENALEX_API_KEY || '',
       mailto: env.OPENALEX_MAILTO || ''
+    },
+    push: {
+      generic: webhookUrl(env.DESIGNSIGNAL_WEBHOOK_URL || explicit.push?.generic || ''),
+      feishu: webhookUrl(env.FEISHU_WEBHOOK_URL || explicit.push?.feishu || ''),
+      wecom: webhookUrl(env.WECOM_WEBHOOK_URL || explicit.push?.wecom || '')
     },
     feishuDocument: {
       appId: env.FEISHU_APP_ID || '',
