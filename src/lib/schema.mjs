@@ -1,4 +1,5 @@
 import { buildBriefing } from './briefing.mjs';
+import { isIsoDate } from './util.mjs';
 const categories = new Set(['paper', 'product', 'ui', 'frontier']);
 const analysisFields = ['evidence', 'method', 'novelty', 'limits', 'whyLearn', 'studyAction'];
 const text = (value, name, max = 12000) => {
@@ -222,7 +223,7 @@ export function validateSynthesis(value, items, evidence) {
 
 export function validateReport(report) {
   if (![2, 3, 4].includes(report.schemaVersion)) throw new Error('unsupported report schema version');
-  if (!/^\d{4}-\d{2}-\d{2}$/.test(report.date)) throw new Error('invalid report date');
+  if (!isIsoDate(report.date)) throw new Error('invalid report date');
   if (!Array.isArray(report.items) || report.items.length !== 6) throw new Error('report must contain exactly six items');
   report.items.forEach(validateItem);
   for (const item of report.items) {

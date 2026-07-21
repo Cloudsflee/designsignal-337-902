@@ -6,7 +6,7 @@ import path from 'node:path';
 import { fixtureCandidates } from '../fixtures/daily.mjs';
 import { selectDaily } from '../src/lib/select.mjs';
 import { buildReport } from '../src/lib/report.mjs';
-import { appendManifestEntry, readReportByDate, recoverReport, writeReport } from '../src/lib/storage.mjs';
+import { appendManifestEntry, latestReport, readHistory, readReportByDate, recoverReport, writeReport } from '../src/lib/storage.mjs';
 import { atomicWrite, sha256, windowsAtomicReplace, withLock } from '../src/lib/util.mjs';
 import { queueDeliveries, retryOutbox } from '../src/lib/push.mjs';
 import { nextScheduledAt } from '../src/lib/scheduler.mjs';
@@ -20,6 +20,42 @@ test('dated report writes atomically, manifests once and is idempotent', async (
   assert.equal(first.status, 'written'); assert.equal(second.status, 'exists');
   const files = await readdir(path.join(dir, 'reports', report.date)); assert.deepEqual(files.sort(), ['report.html', 'report.json', 'report.md']);
   assert.equal((await readFile(path.join(dir, 'manifest.ndjson'), 'utf8')).trim().split('\n').length, 1);
+  await rm(dir, { recursive: true, force: true });
+});
+
+test('manifest history retains source URLs for canonical 60-day dedupe', async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), 'ds-history-url-')), report = await fixtureReport();
+  await writeReport(dir, report);
+  const history = await readHistory(dir);
+  assert.equal(history.length, 6);
+  assert.ok(history.every(item => typeof item.url === 'string' && item.url.startsWith('http')));
+  await rm(dir, { recursive: true, force: true });
+});
+
+test('legacy manifest history backfills URLs from a matching immutable report without rewriting it', async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), 'ds-history-legacy-')), report = await fixtureReport();
+  await writeReport(dir, report);
+  const manifestFile = path.join(dir, 'manifest.ndjson');
+  const entry = JSON.parse((await readFile(manifestFile, 'utf8')).trim());
+  delete entry.itemUrls;
+  const legacy = `${JSON.stringify(entry)}\n`;
+  await writeFile(manifestFile, legacy);
+  const history = await readHistory(dir);
+  assert.deepEqual(history.map(item => [item.id, item.url]), report.items.map(item => [item.id, item.source.url]));
+  assert.equal(await readFile(manifestFile, 'utf8'), legacy);
+  await rm(dir, { recursive: true, force: true });
+});
+
+test('manifest history rejects malformed URL lists and oversized URLs', async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), 'ds-history-invalid-url-')), report = await fixtureReport();
+  await writeReport(dir, report);
+  const manifestFile = path.join(dir, 'manifest.ndjson');
+  const entry = JSON.parse((await readFile(manifestFile, 'utf8')).trim());
+  await writeFile(manifestFile, `${JSON.stringify({ ...entry, itemUrls: entry.itemUrls.slice(1) })}\n`);
+  await assert.rejects(() => readHistory(dir), /invalid manifest item URLs/);
+  entry.itemUrls[0] = `https://example.com/${'x'.repeat(4096)}`;
+  await writeFile(manifestFile, `${JSON.stringify(entry)}\n`);
+  await assert.rejects(() => readHistory(dir), /invalid manifest item URLs/);
   await rm(dir, { recursive: true, force: true });
 });
 
@@ -465,6 +501,17 @@ test('complete report without a manifest is validated and reconciled once', asyn
   await rm(dir, { recursive: true, force: true });
 });
 
+test('latest report verifies the manifest hash before serving content', async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), 'ds-latest-integrity-')), report = await fixtureReport();
+  await writeReport(dir, report);
+  const file = path.join(dir, 'reports', report.date, 'report.json');
+  const tampered = JSON.parse(await readFile(file, 'utf8'));
+  tampered.generatedAt = '2026-07-19T12:34:56.000Z';
+  await writeFile(file, `${JSON.stringify(tampered, null, 2)}\n`);
+  await assert.rejects(() => latestReport(dir), /manifest hash mismatch/);
+  await rm(dir, { recursive: true, force: true });
+});
+
 test('immutable schema v2 report reads and recovers under its legacy audit contract', async () => {
   const dir = await mkdtemp(path.join(os.tmpdir(), 'ds-v2-recover-'));
   const report = await fixtureReport();
@@ -517,6 +564,30 @@ test('daily reconciles a missing manifest before collection', async () => {
   await rm(dir, { recursive: true, force: true });
 });
 
+test('live daily serializes the full date run before collection', async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), 'ds-daily-lock-'));
+  let release;
+  const gate = new Promise(resolve => { release = resolve; });
+  let started;
+  const startedPromise = new Promise(resolve => { started = resolve; });
+  const config = {
+    dataDir: dir, timezone: 'Asia/Shanghai',
+    selection: { priorityInstitutionPaper: { institutionIds: ['I99065089'], freshnessDays: 7, maxScoreGap: 5 } },
+    sources: [{ id: 'slow-feed', adapter: 'feed', url: 'https://example.com/feed', locale: 'en', category: 'frontier' }],
+    network: { allowHosts: ['example.com'], timeoutMs: 100, retries: 0, maxFeedBytes: 1024, maxJsonBytes: 1024, maxPageBytes: 1024 },
+    push: { generic: '', feishu: '', wecom: '' }, feishuDocument: { appId: '', appSecret: '', folderToken: '', tenantBaseUrl: 'https://feishu.cn' },
+    model: { concurrency: 1 }
+  };
+  const ctx = { dnsLookup: async () => [{ address: '8.8.8.8' }], fetchImpl: async () => { started(); await gate; return new Response('<feed/>', { status: 200, headers: { 'content-type': 'application/rss+xml' } }); } };
+  const first = daily(config, { date: '2026-07-19', ctx });
+  await startedPromise;
+  await assert.rejects(() => daily(config, { date: '2026-07-19', ctx }), /already locked/);
+  release();
+  await assert.rejects(first, /insufficient|origin-language/);
+  await assert.rejects(() => stat(path.join(dir, 'locks', '2026-07-19.run.lock')));
+  await rm(dir, { recursive: true, force: true });
+});
+
 test('conflicting manifest identity is refused', async () => {
   const dir = await mkdtemp(path.join(os.tmpdir(), 'ds-manifest-conflict-')), report = await fixtureReport();
   await writeReport(dir, report);
@@ -553,6 +624,21 @@ test('push outbox queues four pending delivery identities when configuration is 
   assert.ok(jobs.every(job => job.state === 'pending' && /missing/.test(job.reason)));
   assert.ok(!('payload' in jobs[0]) && jobs.slice(1).every(job => 'payload' in job));
   assert.ok(jobs.every(job => !('endpoint' in job)));
+  await rm(dir, { recursive: true, force: true });
+});
+
+test('outbox queue and retry reject concurrent mutation through the shared lock', async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), 'ds-push-lock-')), report = await fixtureReport();
+  const config = { network: { allowHosts: [], timeoutMs: 100, retries: 0 }, push: { generic: '', feishu: '', wecom: '' } };
+  let release, markEntered;
+  const gate = new Promise(resolve => { release = resolve; });
+  const entered = new Promise(resolve => { markEntered = resolve; });
+  const held = withLock(path.join(dir, 'locks', 'outbox.lock'), async () => { markEntered(); await gate; });
+  await entered;
+  await assert.rejects(() => queueDeliveries(dir, report, config), /already locked/);
+  await assert.rejects(() => retryOutbox(dir, config), /already locked/);
+  release(); await held;
+  assert.equal((await queueDeliveries(dir, report, config)).length, 4);
   await rm(dir, { recursive: true, force: true });
 });
 

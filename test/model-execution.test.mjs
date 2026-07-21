@@ -50,6 +50,27 @@ test('429, 503, and abort failures use injected bounded backoff and at most thre
   });
 });
 
+test('malformed structured output backs off and Responses endpoint is normalized', async () => {
+  let calls = 0;
+  const delays = [];
+  const urls = [];
+  const config = modelConfig({ baseUrl: 'https://models.example/v1/responses/' });
+  const item = await enrichItem(raw, config, {
+    fetchImpl: async url => {
+      urls.push(String(url));
+      calls++;
+      return calls < 3
+        ? new Response(JSON.stringify({ output_text: '{malformed' }), { status: 200, headers: { 'content-type': 'application/json' } })
+        : okResponse(raw);
+    },
+    sleepImpl: async delay => delays.push(delay)
+  });
+  assert.equal(item.id, raw.id);
+  assert.equal(calls, 3);
+  assert.deepEqual(delays, [1000, 2000]);
+  assert.deepEqual(urls, Array(3).fill('https://models.example/v1/responses'));
+});
+
 test('nonretryable 4xx stops immediately and all model error text is redacted', async () => {
   const credential = ['private', 'fixture', 'marker'].join('-');
   const requestMarker = 'request-private-marker';

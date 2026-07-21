@@ -1,3 +1,5 @@
+import { redact } from './util.mjs';
+
 export function nextScheduledAt(now = new Date(), timeZone = 'Asia/Shanghai', hour = 23, minute = 50) {
   const start = Math.floor(now.getTime() / 60000) * 60000 + 60000;
   const formatter = new Intl.DateTimeFormat('en-US', { timeZone, hour: '2-digit', minute: '2-digit', hourCycle: 'h23' });
@@ -15,6 +17,7 @@ export async function runScheduler(run, { timeZone = 'Asia/Shanghai', logger = c
     logger.log(JSON.stringify({ event: 'scheduled', at: next.toISOString(), timezone: timeZone }));
     await new Promise(resolve => setTimeout(resolve, Math.min(next.getTime() - Date.now(), 2 ** 31 - 1)));
     if (Date.now() + 1000 < next.getTime()) continue;
-    try { await run(); } catch (error) { logger.error(JSON.stringify({ event: 'daily-failed', message: error.message })); }
+    try { await run(); }
+    catch (error) { logger.error(JSON.stringify({ event: 'daily-failed', message: redact(String(error?.message || 'daily run failed')) })); }
   }
 }

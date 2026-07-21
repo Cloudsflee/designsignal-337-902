@@ -161,6 +161,12 @@ test('selection uses candidate language policy and rejects dates over 24 hours i
   future.id = 'future-paper'; future.source = { ...future.source, id: 'future', url: 'https://arxiv.org/abs/2607.99998' }; future.publishedAt = '2026-07-21T16:00:01.000Z';
   const withFuture = selectDaily([...fixtureCandidates, future], { date: '2026-07-19', history: [] });
   assert.ok(withFuture.rejected.some(x => x.id === future.id && x.reason === 'future-dated'));
+  assert.throws(() => selectDaily(fixtureCandidates, { date: '2026-02-30', history: [] }), /invalid selection date/);
+});
+
+test('timezone and model URL configuration are validated before runtime use', async () => {
+  await assert.rejects(() => loadConfig({ env: { DESIGNSIGNAL_TIMEZONE: 'Not/A_Timezone' } }), /invalid timezone/);
+  await assert.rejects(() => loadConfig({ env: { OPENAI_BASE_URL: 'https://models.example/v1?api_key=secret-marker' } }), error => error.message === 'invalid model base URL' && !error.message.includes('secret-marker'));
 });
 
 test('OpenAlex work language overrides Chinese institution locale and auth stays request-only', async () => {

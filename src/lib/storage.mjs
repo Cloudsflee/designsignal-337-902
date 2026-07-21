@@ -1,6 +1,6 @@
 import path from 'node:path';
 import { mkdir, open, readFile, rename, rm, stat } from 'node:fs/promises';
-import { atomicWrite, sha256, withLock } from './util.mjs';
+import { atomicWrite, isIsoDate, sha256, withLock } from './util.mjs';
 import { renderHtml, renderMarkdown } from './render.mjs';
 import { validateReport } from './schema.mjs';
 
@@ -8,8 +8,16 @@ const exists = async file => stat(file).then(() => true, () => false);
 const reportPath = date => `reports/${date}/report.json`;
 const manifestPath = dataDir => path.join(dataDir, 'manifest.ndjson');
 
+function validManifestUrl(value) {
+  if (typeof value !== 'string' || !value || value.length > 4096) return false;
+  try {
+    const parsed = new URL(value);
+    return ['http:', 'https:'].includes(parsed.protocol) && !parsed.username && !parsed.password;
+  } catch { return false; }
+}
+
 function assertDate(date) {
-  if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) throw new Error('invalid report date');
+  if (!isIsoDate(date)) throw new Error('invalid report date');
 }
 
 async function readManifest(dataDir) {
@@ -18,11 +26,24 @@ async function readManifest(dataDir) {
 }
 
 function manifestEntry(report, json) {
-  return { date: report.date, generatedAt: report.generatedAt, path: reportPath(report.date), sha256: sha256(json), itemIds: report.items.map(x => x.id) };
+  return {
+    date: report.date,
+    generatedAt: report.generatedAt,
+    path: reportPath(report.date),
+    sha256: sha256(json),
+    itemIds: report.items.map(x => x.id),
+    // New entries carry source URLs so canonical-URL dedupe survives item ID
+    // changes. Legacy entries are backfilled from their immutable report.
+    itemUrls: report.items.map(x => x.source.url)
+  };
 }
 
 function sameEntry(left, right) {
-  return left.date === right.date && left.generatedAt === right.generatedAt && left.path === right.path && left.sha256 === right.sha256 && JSON.stringify(left.itemIds) === JSON.stringify(right.itemIds);
+  const core = left.date === right.date && left.generatedAt === right.generatedAt && left.path === right.path && left.sha256 === right.sha256 && JSON.stringify(left.itemIds) === JSON.stringify(right.itemIds);
+  if (!core) return false;
+  // Do not rewrite or reject an older manifest solely because it lacks the
+  // optional URL list.
+  return left.itemUrls === undefined || (Array.isArray(left.itemUrls) && JSON.stringify(left.itemUrls) === JSON.stringify(right.itemUrls));
 }
 
 async function manifestState(dataDir, expected) {
@@ -105,8 +126,36 @@ export async function writeReport(dataDir, report) {
 }
 
 export async function readHistory(dataDir) {
-  try { return (await readFile(path.join(dataDir, 'manifest.ndjson'), 'utf8')).trim().split('\n').filter(Boolean).map(JSON.parse).flatMap(x => x.itemIds.map(id => ({ id, date: x.date }))); }
-  catch (error) { if (error.code === 'ENOENT') return []; throw error; }
+  try {
+    const entries = (await readFile(path.join(dataDir, 'manifest.ndjson'), 'utf8')).trim().split('\n').filter(Boolean).map(JSON.parse);
+    const history = [];
+    for (const entry of entries) {
+      if (!isIsoDate(entry?.date) || !Array.isArray(entry.itemIds) || entry.itemIds.length > 100) throw new Error('invalid manifest history entry');
+      let urls = [];
+      if (entry.itemUrls !== undefined) {
+        if (!Array.isArray(entry.itemUrls) || entry.itemUrls.length !== entry.itemIds.length || entry.itemUrls.some(url => !validManifestUrl(url))) throw new Error('invalid manifest item URLs');
+        urls = entry.itemUrls;
+      }
+      const current = [];
+      for (const [index, id] of entry.itemIds.entries()) {
+        if (typeof id !== 'string' || !id || id.length > 300) throw new Error('invalid manifest item identity');
+        const item = { id, date: entry.date, ...(urls[index] ? { url: urls[index] } : {}) };
+        current.push(item); history.push(item);
+      }
+      // Preserve URL dedupe for legacy manifests without changing their bytes.
+      if (!urls.length && entry.path === reportPath(entry.date)) {
+        try {
+          const json = await readFile(path.join(dataDir, entry.path), 'utf8');
+          if (/^[a-f0-9]{64}$/.test(entry.sha256 || '') && sha256(json) === entry.sha256) {
+            const report = validateReport(JSON.parse(json));
+            const byId = new Map(report.items.map(item => [item.id, item.source.url]));
+            for (const item of current) if (byId.has(item.id)) item.url = byId.get(item.id);
+          }
+        } catch {}
+      }
+    }
+    return history;
+  } catch (error) { if (error.code === 'ENOENT') return []; throw error; }
 }
 
 export async function latestReport(dataDir) {
@@ -114,6 +163,11 @@ export async function latestReport(dataDir) {
     const lines = (await readFile(path.join(dataDir, 'manifest.ndjson'), 'utf8')).trim().split('\n').filter(Boolean);
     if (!lines.length) return null;
     const entry = JSON.parse(lines.at(-1));
-    return validateReport(JSON.parse(await readFile(path.join(dataDir, entry.path), 'utf8')));
+    if (!entry || !isIsoDate(entry.date) || entry.path !== reportPath(entry.date) || !/^[a-f0-9]{64}$/.test(entry.sha256 || '')) throw new Error('invalid latest manifest entry');
+    const json = await readFile(path.join(dataDir, entry.path), 'utf8');
+    if (sha256(json) !== entry.sha256) throw new Error(`manifest hash mismatch for ${entry.date}`);
+    const report = validateReport(JSON.parse(json));
+    if (report.date !== entry.date) throw new Error(`manifest report date mismatch for ${entry.date}`);
+    return report;
   } catch (error) { if (error.code === 'ENOENT') return null; throw error; }
 }

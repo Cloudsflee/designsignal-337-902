@@ -8,8 +8,9 @@ import path from 'node:path';
 
 const policy = { allowHosts: ['example.com'], timeoutMs: 100, retries: 0, maxPageBytes: 8 };
 test('private, link-local, mapped, documentation and CGNAT addresses are blocked', () => {
-  for (const ip of ['127.0.0.1', '10.0.0.1', '172.16.0.1', '192.168.1.1', '169.254.1.1', '100.64.0.1', '192.0.2.1', '::1', 'fc00::1', 'fe80::1', '2001:db8::1']) assert.equal(isPrivateAddress(ip), true, ip);
+  for (const ip of ['127.0.0.1', '10.0.0.1', '172.16.0.1', '192.168.1.1', '169.254.1.1', '100.64.0.1', '192.0.2.1', '::1', 'fc00::1', 'fe80::1', '2001:db8::1', '::ffff:10.0.0.1', '::ffff:192.168.1.1']) assert.equal(isPrivateAddress(ip), true, ip);
   assert.equal(isPrivateAddress('8.8.8.8'), false);
+  assert.equal(isPrivateAddress('::ffff:8.8.8.8'), false);
 });
 
 test('SSRF guard enforces allowlist and rejects private DNS results', async () => {
@@ -68,6 +69,10 @@ test('status-aware retries do not replay 404 or POST and honor bounded Retry-Aft
     requestImpl: async () => { postCalls++; return new Response('', { status: 503 }); }
   }), error => error instanceof HttpStatusError && error.status === 503 && error.retryable);
   assert.equal(postCalls, 1);
+  await assert.rejects(() => safeFetch('https://example.com/redirect', { ...policy, retries: 0 }, {
+    method: 'POST', body: '{}', dnsLookup: publicDns,
+    requestImpl: async () => new Response('', { status: 307, headers: { location: 'https://example.com/next' } })
+  }), /side-effecting request blocked/);
 });
 
 test('request timeout remains active while the response body is streaming', async () => {

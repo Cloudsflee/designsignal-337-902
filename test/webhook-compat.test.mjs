@@ -1,12 +1,13 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, readFile, readdir, rm, stat, utimes } from 'node:fs/promises';
+import { mkdtemp, readFile, readdir, rm, stat, utimes, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { fixtureCandidates } from '../fixtures/daily.mjs';
 import { buildReport } from '../src/lib/report.mjs';
 import { selectDaily } from '../src/lib/select.mjs';
 import { queueDeliveries, retryOutbox } from '../src/lib/push.mjs';
+import { queueWebhookDeliveries, retryWebhookOutbox } from '../src/lib/webhook.mjs';
 import { atomicWrite, sha256 } from '../src/lib/util.mjs';
 
 const network = { allowHosts: [], timeoutMs: 100, retries: 3, maxJsonBytes: 65536, maxPageBytes: 65536 };
@@ -46,6 +47,20 @@ test('legacy webhook identities and payload schema are preserved byte-for-byte w
       assert.deepEqual(await readFile(file), before.bytes);
       assert.equal((await stat(file)).mtimeMs, before.mtime);
     }
+  } finally { await rm(dir, { recursive: true, force: true }); }
+});
+
+test('invalid calendar webhook report dates are ignored before delivery', async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), 'ds-webhook-invalid-date-'));
+  try {
+    const report = await fixtureReport();
+    const config = { dataDir: dir, push: { generic: '', feishu: '', wecom: '' }, network: { allowHosts: [], timeoutMs: 100, retries: 0 } };
+    const jobs = await queueWebhookDeliveries(dir, report, config);
+    const file = path.join(dir, 'outbox', `${jobs[0].id}.json`);
+    const stored = JSON.parse(await readFile(file, 'utf8')); stored.reportDate = '2026-02-30';
+    await writeFile(file, JSON.stringify(stored));
+    const result = await retryWebhookOutbox(dir, config, { fetchImpl: async () => assert.fail('network must not be reached') });
+    assert.equal(result.some(job => job.id === jobs[0].id), false);
   } finally { await rm(dir, { recursive: true, force: true }); }
 });
 

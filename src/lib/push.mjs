@@ -1,6 +1,6 @@
 import path from 'node:path';
 import { mkdir, readdir, readFile } from 'node:fs/promises';
-import { atomicWrite, sha256 } from './util.mjs';
+import { atomicWrite, isIsoDate, sha256, withLock } from './util.mjs';
 import { HttpStatusError, safeFetch } from './network.mjs';
 import { readReportByDate } from './storage.mjs';
 import { renderFeishuBlocks } from './render.mjs';
@@ -25,7 +25,7 @@ const nowIso = ctx => new Date((ctx.now?.() ?? Date.now())).toISOString();
 
 function assertStoredJob(job, filename) {
   if (job.schemaVersion !== JOB_VERSION || job.channel !== CHANNEL || !/^[a-f0-9]{24}$/.test(job.id || '') || filename !== `${job.id}.json`) throw new Error('invalid Feishu document job identity');
-  if (!/^\d{4}-\d{2}-\d{2}$/.test(job.reportDate || '') || job.id !== sha256(`${job.reportDate}:${CHANNEL}:v${JOB_VERSION}`).slice(0, 24)) throw new Error('invalid Feishu document report identity');
+  if (!isIsoDate(job.reportDate) || job.id !== sha256(`${job.reportDate}:${CHANNEL}:v${JOB_VERSION}`).slice(0, 24)) throw new Error('invalid Feishu document report identity');
   if (!/^[a-f0-9]{64}$/.test(job.renderFingerprint || '') || !states.has(job.state) || !Number.isSafeInteger(job.attempts) || job.attempts < 0 || !Number.isFinite(Date.parse(job.nextAttemptAt))) throw new Error('invalid Feishu document job state');
   if (!Number.isSafeInteger(job.totalBlocks) || job.totalBlocks < 1 || !Number.isSafeInteger(job.nextBlockIndex) || job.nextBlockIndex < 0 || job.nextBlockIndex > job.totalBlocks) throw new Error('invalid Feishu document job progress');
   if (job.documentId !== undefined && (!/^[A-Za-z0-9_-]{8,128}$/.test(job.documentId) || ((!Number.isSafeInteger(job.revisionId) || job.revisionId < 0) && !/^\d+$/.test(job.revisionId || '')))) throw new Error('invalid stored Feishu document identity');
@@ -47,9 +47,21 @@ function documentUrl(config, documentId) {
 const chunkToken = (job, cursor, size, revision) => sha256(`${job.id}:${job.documentId}:${cursor}:${size}:${revision}:${job.renderFingerprint}`).slice(0, 32);
 const clearChunk = job => { for (const key of ['chunkCursor', 'chunkSize', 'chunkRevisionId', 'clientToken', 'writingAt']) delete job[key]; };
 
+const SAFE_JOB_FIELDS = [
+  'schemaVersion', 'id', 'channel', 'reportDate', 'endpointConfigured', 'state', 'reason',
+  'attempts', 'nextAttemptAt', 'createdAt', 'renderFingerprint', 'totalBlocks', 'nextBlockIndex',
+  'documentId', 'revisionId', 'chunkCursor', 'chunkSize', 'chunkRevisionId', 'clientToken',
+  'creatingAt', 'createdDocumentAt', 'writingAt', 'confirmedChunkAt', 'deliveredAt', 'reconciliationRequiredAt'
+];
+
 export function exposeDeliveryJob(job, config) {
-  const exposed = structuredClone(job);
-  if (job.state === 'delivered' && job.documentId) exposed.documentUrl = documentUrl(config, job.documentId);
+  const exposed = {};
+  for (const key of SAFE_JOB_FIELDS) {
+    const value = job?.[key];
+    if (value === undefined || value === null) continue;
+    if (['string', 'number', 'boolean'].includes(typeof value)) exposed[key] = value;
+  }
+  if (job?.state === 'delivered' && /^[A-Za-z0-9_-]{8,128}$/.test(String(job.documentId || ''))) exposed.documentUrl = documentUrl(config, job.documentId);
   return exposed;
 }
 
@@ -232,14 +244,22 @@ async function retryDocumentOutbox(dataDir, config, ctx = {}) {
   return results;
 }
 
-export async function queueDeliveries(dataDir, report, config) {
+async function queueDeliveriesUnlocked(dataDir, report, config) {
   const document = await queueDocumentDelivery(dataDir, report, config);
   const webhooks = await queueWebhookDeliveries(dataDir, report, config);
   return [...document, ...webhooks];
 }
 
-export async function retryOutbox(dataDir, config, ctx = {}) {
+export async function queueDeliveries(dataDir, report, config) {
+  return withLock(path.join(dataDir, 'locks', 'outbox.lock'), () => queueDeliveriesUnlocked(dataDir, report, config));
+}
+
+async function retryOutboxUnlocked(dataDir, config, ctx = {}) {
   const document = await retryDocumentOutbox(dataDir, config, ctx);
   const webhooks = await retryWebhookOutbox(dataDir, config, ctx);
   return [...document, ...webhooks];
+}
+
+export async function retryOutbox(dataDir, config, ctx = {}) {
+  return withLock(path.join(dataDir, 'locks', 'outbox.lock'), () => retryOutboxUnlocked(dataDir, config, ctx));
 }
