@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { fixtureCandidates } from '../fixtures/daily.mjs';
@@ -48,9 +48,31 @@ test('HTTP dashboard escapes untrusted content and sends security headers/APIs',
   const reportFile = path.join(dir, 'reports', report.date, 'report.json');
   const tampered = JSON.parse(await readFile(reportFile, 'utf8')); delete tampered.audit.selectionPolicy.priorityInstitutionPaper;
   await writeFile(reportFile, `${JSON.stringify(tampered, null, 2)}\n`);
-  const rejected = await invoke(dir, '/api/report'); assert.equal(rejected.status, 500); assert.match(JSON.parse(rejected.body).error, /priorityInstitutionPaper required/);
+  const rejected = await invoke(dir, '/api/report'); assert.equal(rejected.status, 500); assert.match(JSON.parse(rejected.body).error, /manifest hash mismatch/);
   await rm(legacyDir, { recursive: true, force: true });
   await rm(dir, { recursive: true, force: true });
+});
+
+test('outbox API returns a safe metadata projection for legacy or malformed jobs', async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), 'ds-http-outbox-'));
+  try {
+    await mkdir(path.join(dir, 'outbox'));
+    await writeFile(path.join(dir, 'outbox', 'fixture-job.json'), JSON.stringify({
+      id: 'fixture-job', channel: 'generic', reportDate: '2026-07-19', state: 'pending',
+      attempts: 0, nextAttemptAt: '2026-07-19T00:00:00.000Z', createdAt: '2026-07-19T00:00:00.000Z',
+      payload: { secret: 'payload-secret-marker' }, endpoint: 'https://secret-endpoint.example', token: 'token-secret-marker'
+    }));
+    await writeFile(path.join(dir, 'outbox', 'broken.json'), '{not-json');
+    const result = { headers: {}, status: 0, body: '' };
+    const req = { method: 'GET', url: '/api/outbox', async *[Symbol.asyncIterator]() {} };
+    const res = { setHeader(k, v) { result.headers[k] = v; }, writeHead(status, extra = {}) { result.status = status; Object.assign(result.headers, extra); }, end(value = '') { result.body += value; } };
+    await handleDashboardRequest({ dataDir: dir, feishuDocument: { tenantBaseUrl: 'https://feishu.cn' } }, req, res);
+    assert.equal(result.status, 200);
+    assert.doesNotMatch(result.body, /payload-secret-marker|secret-endpoint|token-secret-marker/);
+    const jobs = JSON.parse(result.body);
+    assert.ok(jobs.some(job => job.state === 'invalid' && job.reason === 'invalid-job-file'));
+    assert.ok(jobs.some(job => job.id === 'fixture-job' && !('payload' in job)));
+  } finally { await rm(dir, { recursive: true, force: true }); }
 });
 
 test('Responses API structured output is validated and retried', async () => {

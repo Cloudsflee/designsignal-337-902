@@ -289,3 +289,11 @@ test('interrupted chunks reconcile and malformed progress is rejected before net
     assert.equal(calls, 0);
   } finally { await rm(invalid.dir, { recursive: true, force: true }); }
 });
+
+test('invalid calendar report dates are rejected before Feishu network access', async () => {
+  const fixture = await setupDelivery();
+  try {
+    await overwriteJob(fixture, { reportDate: '2026-02-30' });
+    await assert.rejects(() => retryOutbox(fixture.dir, fixture.config, { fetchImpl: async () => assert.fail('network must not be reached') }), /invalid Feishu document report identity/);
+  } finally { await rm(fixture.dir, { recursive: true, force: true }); }
+});

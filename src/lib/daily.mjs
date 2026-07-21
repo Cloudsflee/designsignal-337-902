@@ -7,7 +7,7 @@ import { enrichItems, synthesizeDaily } from './model.mjs';
 import { buildReport } from './report.mjs';
 import { readHistory, recoverReport, writeReport } from './storage.mjs';
 import { queueDeliveries, retryOutbox } from './push.mjs';
-import { atomicWrite, isoDate } from './util.mjs';
+import { atomicWrite, isoDate, isIsoDate, withLock } from './util.mjs';
 import { attachCachedAssets, persistSelectedAssets } from './assets.mjs';
 
 export async function collect(config, { dryRun = false, ctx = {} } = {}) {
@@ -16,7 +16,7 @@ export async function collect(config, { dryRun = false, ctx = {} } = {}) {
   return result;
 }
 
-export async function daily(config, { fixture = false, dryRun = false, date = isoDate(new Date(), config.timezone), ctx = {} } = {}) {
+async function runDaily(config, { fixture, dryRun, date, ctx }) {
   if (!fixture && !dryRun) {
     const recovered = await recoverReport(config.dataDir, date);
     if (recovered) {
@@ -37,4 +37,14 @@ export async function daily(config, { fixture = false, dryRun = false, date = is
   await queueDeliveries(config.dataDir, result.report, config);
   const deliveries = await retryOutbox(config.dataDir, config, ctx);
   return { ...result, deliveries };
+}
+
+export async function daily(config, { fixture = false, dryRun = false, date = isoDate(new Date(), config.timezone), ctx = {} } = {}) {
+  if (!isIsoDate(date)) throw new Error('invalid report date');
+  // Dry runs and fixtures are explicitly side-effect free and can coexist.
+  // A live date is serialized across collection, model calls, publication,
+  // and outbox advancement so a second process cannot duplicate work or sends.
+  if (fixture || dryRun) return runDaily(config, { fixture, dryRun, date, ctx });
+  const lock = path.join(config.dataDir, 'locks', `${date}.run.lock`);
+  return withLock(lock, () => runDaily(config, { fixture, dryRun, date, ctx }));
 }

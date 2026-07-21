@@ -154,13 +154,17 @@ export async function loadConfig({ configPath, env = process.env } = {}) {
   config.sources = [...(explicit.sources || defaults.sources), ...optionalFeeds];
   try {
     const modelUrl = new URL(config.model.baseUrl);
-    if (!['http:', 'https:'].includes(modelUrl.protocol) || modelUrl.username || modelUrl.password) throw new Error();
+    if (!['http:', 'https:'].includes(modelUrl.protocol) || modelUrl.username || modelUrl.password || modelUrl.search || modelUrl.hash) throw new Error();
   } catch { throw new Error('invalid model base URL'); }
   try {
     const tenantUrl = new URL(config.feishuDocument.tenantBaseUrl);
     if (tenantUrl.protocol !== 'https:' || tenantUrl.username || tenantUrl.password || tenantUrl.port || tenantUrl.search || tenantUrl.hash || !['', '/'].includes(tenantUrl.pathname)) throw new Error();
     config.feishuDocument.tenantBaseUrl = tenantUrl.origin;
   } catch { throw new Error('invalid Feishu document-link origin'); }
+  try {
+    if (typeof config.timezone !== 'string' || config.timezone.length > 100) throw new Error();
+    new Intl.DateTimeFormat('en-US', { timeZone: config.timezone }).format();
+  } catch { throw new Error('invalid timezone'); }
   if (!Number.isInteger(config.model.maxOutputTokens) || config.model.maxOutputTokens < 256 || config.model.maxOutputTokens > 32768) throw new Error('model max output tokens must be an integer from 256 to 32768');
   if (!Number.isInteger(config.model.concurrency) || config.model.concurrency < 1 || config.model.concurrency > 4) throw new Error('model concurrency must be an integer from 1 to 4');
   if (!Number.isInteger(config.model.timeoutMs) || config.model.timeoutMs < 10000 || config.model.timeoutMs > 600000) throw new Error('model timeout must be an integer from 10000 to 600000 milliseconds');

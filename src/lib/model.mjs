@@ -85,10 +85,11 @@ const MAX_RETRY_AFTER_MS = 30000;
 const RETRY_BASE_MS = 1000;
 
 class ModelError extends Error {
-  constructor(message, { retryable = false, retryAfterMs = 0 } = {}) {
+  constructor(message, { retryable = false, retryAfterMs = 0, kind = 'unknown' } = {}) {
     super(message);
     this.retryable = retryable;
     this.retryAfterMs = retryAfterMs;
+    this.kind = kind;
   }
 }
 
@@ -98,14 +99,30 @@ const retryAfterMs = response => {
   return Math.min(Number(value) * 1000, MAX_RETRY_AFTER_MS);
 };
 
-const publicFailure = error => error instanceof ModelError ? error : new ModelError('invalid structured model output [REDACTED]', { retryable: true });
+function publicFailure(error) {
+  if (error instanceof ModelError) return error;
+  // A provider can return malformed JSON or a schema-invalid object even with
+  // HTTP 200. Retry those boundedly, but never expose provider details.
+  const message = String(error?.message || '');
+  if (/response exceeds \d+ byte limit/i.test(message)) return new ModelError('model response exceeded configured limit [REDACTED]', { kind: 'response-limit' });
+  return new ModelError('invalid structured model output [REDACTED]', { retryable: true, kind: 'invalid-output' });
+}
+
+function responsesEndpoint(baseUrl) {
+  const endpoint = new URL(baseUrl);
+  // Config loading rejects query/fragment components. Keep direct library
+  // callers safe as well by dropping them before constructing the endpoint.
+  endpoint.search = '';
+  endpoint.hash = '';
+  const pathname = endpoint.pathname.replace(/\/+$/, '');
+  endpoint.pathname = /\/responses$/i.test(pathname) ? pathname || '/responses' : `${pathname || ''}/responses`;
+  return endpoint.href;
+}
 
 async function structuredResponse({ config, ctx, instructions, input, schema, name, validate }) {
   if (!config.model.model || !config.model.token) throw new Error('live model generation requires OPENAI_MODEL and OPENAI_API_KEY');
   if ((config.model.wireApi || 'responses') !== 'responses') throw new Error('configured model provider must use the Responses wire API');
-  const endpointUrl = new URL(config.model.baseUrl);
-  endpointUrl.pathname = `${endpointUrl.pathname.replace(/\/?$/, '/')}responses`;
-  const endpoint = endpointUrl.href;
+  const endpoint = responsesEndpoint(config.model.baseUrl);
   let last;
   for (let attempt = 0; attempt < 3; attempt++) {
     let timedOut = false;
@@ -137,16 +154,16 @@ async function structuredResponse({ config, ctx, instructions, input, schema, na
         }
         if (!response.ok) {
           const retryable = response.status === 429 || (response.status >= 500 && response.status <= 599);
-          throw new ModelError(`model HTTP ${response.status}`, { retryable, retryAfterMs: retryable ? retryAfterMs(response) : 0 });
+          throw new ModelError(`model HTTP ${response.status}`, { retryable, retryAfterMs: retryable ? retryAfterMs(response) : 0, kind: 'http' });
         }
         responseBody = await readBoundedBody(response, config.network.maxJsonBytes || 2 * 1024 * 1024);
       } finally { clearTimer(timer); }
       const parsed = JSON.parse(outputText(JSON.parse(responseBody.toString('utf8'))));
       return validate(parsed);
     } catch (error) {
-      last = timedOut ? new ModelError('model request timed out [REDACTED]', { retryable: true }) : publicFailure(error);
+      last = timedOut ? new ModelError('model request timed out [REDACTED]', { retryable: true, kind: 'timeout' }) : publicFailure(error);
       if (!last.retryable) throw new Error(`structured model output failed: ${last.message}`);
-      if (attempt < 2 && last instanceof ModelError && (last.message.includes('timed out') || last.message.includes('network') || last.message.includes('aborted') || /^model HTTP (?:429|5\d\d)$/.test(last.message))) {
+      if (attempt < 2) {
         const delay = Math.max(Math.min(RETRY_BASE_MS * 2 ** attempt, MAX_RETRY_AFTER_MS), last.retryAfterMs || 0);
         await (ctx.sleepImpl || sleep)(delay);
       }
@@ -182,22 +199,26 @@ export async function enrichItem(raw, config, ctx = {}) {
 
 export async function enrichItems(rawItems, config, ctx = {}, transform = value => value) {
   const results = new Array(rawItems.length);
-  const failures = [];
   let nextIndex = 0;
-  let stopped = false;
-  const worker = async () => {
-    while (!stopped) {
-      const index = nextIndex++;
-      if (index >= rawItems.length) return;
-      try { results[index] = transform(await enrichItem(rawItems[index], config, ctx), rawItems[index]); }
-      catch { failures.push(index); stopped = true; }
-    }
-  };
   const workerCount = Math.min(config.model.concurrency ?? 2, rawItems.length);
-  await Promise.all(Array.from({ length: workerCount }, worker));
-  if (failures.length) {
-    const index = Math.min(...failures);
-    throw new Error(`model analysis failed for item ${rawItems[index].id}`);
+  const active = new Map();
+  const start = index => {
+    const pending = enrichItem(rawItems[index], config, ctx)
+      .then(item => ({ index, ok: true, value: transform(item, rawItems[index]) }))
+      .catch(() => ({ index, ok: false }));
+    active.set(index, pending);
+  };
+  while (nextIndex < rawItems.length && active.size < workerCount) start(nextIndex++);
+  while (active.size) {
+    const settled = await Promise.race(active.values());
+    active.delete(settled.index);
+    if (!settled.ok) {
+      const remaining = await Promise.all(active.values());
+      const index = Math.min(settled.index, ...remaining.filter(item => !item.ok).map(item => item.index));
+      throw new Error(`model analysis failed for item ${rawItems[index].id}`);
+    }
+    results[settled.index] = settled.value;
+    if (nextIndex < rawItems.length) start(nextIndex++);
   }
   return results;
 }

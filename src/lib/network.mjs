@@ -16,14 +16,64 @@ export class HttpStatusError extends Error {
   }
 }
 
+function ipv4Number(address) {
+  const parts = String(address).split('.');
+  if (parts.length !== 4 || parts.some(part => !/^\d{1,3}$/.test(part) || Number(part) > 255)) return null;
+  return parts.reduce((value, part) => (value * 256) + Number(part), 0);
+}
+
+function ipv6Number(address) {
+  let value = String(address).toLowerCase().split('%', 1)[0];
+  if (!value.includes(':')) return null;
+  const halves = value.split('::');
+  if (halves.length > 2) return null;
+  const parsePart = part => {
+    if (!part) return [];
+    const pieces = part.split(':');
+    const output = [];
+    for (const piece of pieces) {
+      if (piece.includes('.')) {
+        const mapped = ipv4Number(piece);
+        if (mapped === null || output.length !== pieces.length - 1) return null;
+        output.push((mapped >>> 16) & 0xffff, mapped & 0xffff);
+      } else if (/^[0-9a-f]{1,4}$/.test(piece)) output.push(Number.parseInt(piece, 16));
+      else return null;
+    }
+    return output;
+  };
+  const left = parsePart(halves[0]);
+  const right = halves.length === 2 ? parsePart(halves[1]) : [];
+  if (!left || !right || (halves.length === 1 && left.length !== 8) || (halves.length === 2 && left.length + right.length >= 8)) return null;
+  const words = halves.length === 2 ? [...left, ...Array(8 - left.length - right.length).fill(0), ...right] : left;
+  return words.reduce((result, word) => (result << 16n) | BigInt(word), 0n);
+}
+
+function ipv6InRange(value, prefix, bits) {
+  const mask = ((1n << BigInt(bits)) - 1n) << BigInt(128 - bits);
+  return (value & mask) === (prefix & mask);
+}
+
 export function isPrivateAddress(address) {
   if (!isIP(address)) return true;
-  if (address.includes(':')) {
-    const x = address.toLowerCase();
-    return x === '::1' || x === '::' || x.startsWith('fc') || x.startsWith('fd') || x.startsWith('fe8') || x.startsWith('fe9') || x.startsWith('fea') || x.startsWith('feb') || x.startsWith('ff') || x.startsWith('2001:db8:') || x.startsWith('::ffff:127.') || x.startsWith('::ffff:10.') || x.startsWith('::ffff:192.168.');
+  if (isIP(address) === 4) {
+    const value = ipv4Number(address);
+    if (value === null) return true;
+    const [a, b, c] = String(address).split('.').map(Number);
+    return a === 0 || a === 10 || a === 127 || (a === 100 && b >= 64 && b <= 127) || (a === 169 && b === 254) || (a === 172 && b >= 16 && b <= 31) || (a === 192 && [0, 2, 168].includes(b)) || (a === 198 && (b === 18 || b === 19 || b === 51)) || (a === 203 && b === 0 && c === 113) || a >= 224 || value === 0;
   }
-  const n = address.split('.').map(Number);
-  return n[0] === 0 || n[0] === 10 || n[0] === 127 || (n[0] === 100 && n[1] >= 64 && n[1] <= 127) || (n[0] === 169 && n[1] === 254) || (n[0] === 172 && n[1] >= 16 && n[1] <= 31) || (n[0] === 192 && [0, 2, 168].includes(n[1])) || (n[0] === 198 && (n[1] === 18 || n[1] === 19 || n[1] === 51)) || (n[0] === 203 && n[1] === 0 && n[2] === 113) || n[0] >= 224;
+  const value = ipv6Number(address);
+  if (value === null) return true;
+  // IPv4-mapped IPv6 addresses must receive the same policy as their IPv4 form.
+  if ((value >> 32n) === 0xffffn) {
+    const mapped = Number(value & 0xffffffffn);
+    return isPrivateAddress(`${mapped >>> 24}.${(mapped >>> 16) & 255}.${(mapped >>> 8) & 255}.${mapped & 255}`);
+  }
+  return value === 0n || value === 1n
+    || ipv6InRange(value, 0xfc00n << 112n, 7) // unique local
+    || ipv6InRange(value, 0xfe80n << 112n, 10) // link-local
+    || ipv6InRange(value, 0xff00n << 112n, 8) // multicast
+    || ipv6InRange(value, 0x20010db8n << 96n, 32) // documentation
+    || ipv6InRange(value, 0x20010000n << 96n, 23); // special-use/reserved blocks
 }
 
 export async function resolveSafeUrl(input, policy, { dnsLookup = lookup } = {}) {
@@ -97,6 +147,10 @@ export async function safeFetch(input, policy, options = {}) {
       }
       try {
         if (REDIRECTS.has(response.status)) {
+          if (!['GET', 'HEAD'].includes(method)) {
+            await discardBody(response);
+            throw new Error('redirect for side-effecting request blocked');
+          }
           const location = response.headers.get('location');
           await discardBody(response);
           if (!location) throw new Error('redirect without location');

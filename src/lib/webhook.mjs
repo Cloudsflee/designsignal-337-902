@@ -1,7 +1,7 @@
 import path from 'node:path';
 import { mkdir, readdir, readFile } from 'node:fs/promises';
 import { HttpStatusError, safeFetch } from './network.mjs';
-import { atomicWrite, sha256 } from './util.mjs';
+import { atomicWrite, isIsoDate, sha256 } from './util.mjs';
 
 const CHANNELS = ['generic', 'feishu', 'wecom'];
 const MISSING_ENDPOINT = 'missing-secret-or-endpoint';
@@ -43,7 +43,7 @@ function compatibleIdentity(stored, expected, filename) {
 
 function validStoredJob(job, filename) {
   if (!CHANNELS.includes(job?.channel) || filename !== `${job.id}.json`) return false;
-  if (!/^\d{4}-\d{2}-\d{2}$/.test(job.reportDate || '') || job.id !== jobId(job.reportDate, job.channel)) return false;
+  if (!isIsoDate(job.reportDate) || job.id !== jobId(job.reportDate, job.channel)) return false;
   if (!['pending', 'delivered'].includes(job.state) || !Number.isSafeInteger(job.attempts) || job.attempts < 0) return false;
   if (!Number.isFinite(Date.parse(job.nextAttemptAt)) || !validPayload(job.channel, job.payload, job.reportDate)) return false;
   return true;
