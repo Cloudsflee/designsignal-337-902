@@ -1,0 +1,22 @@
+model = "fixture-codex-model"
+model_provider = "fixture_responses"
+
+[model_providers.fixture_responses]
+base_url = "https://fixture-models.example/v1"
+wire_api = "responses"
+
+[ui]
+"hide-agent-suggestion" = true
+accent = [17, 33, 90]
+opacity = 0.85
+base_url = "https://ignored-ui.example/v1"
+
+[hooks."after-run"]
+enabled = false
+commands = ["notify", "archive"]
+"public-config-marker" = "ignored-hook-marker"
+
+[projects."/workspace/designsignal".state]
+trusted = true
+retries = 3
+labels = ["local", "fixture"]

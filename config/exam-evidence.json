@@ -1,0 +1,28 @@
+{
+  "schemaVersion": 1,
+  "evidenceVersion": "zju-idi-2027-v1",
+  "verifiedAt": "2026-07-19T00:00:00.000Z",
+  "authority": "Zhejiang University International Design Institute",
+  "sources": [
+    { "kind": "notice", "url": "http://www.idi.zju.edu.cn/5060.html", "urlSha256": "6ae1f1eea490320327f14c9ed1a323825e23d4b11f25a7d653f722d00bf18ad3" },
+    { "kind": "337-outline-pdf", "url": "http://www.idi.zju.edu.cn/wp-content/uploads/2026/06/f952ddc1036c1ac9e9943c67dad6d09b-1.pdf", "urlSha256": "00ae9b15b87243093062b82804731b19bf343fb6a264e2335f39c086db3017cb" },
+    { "kind": "902-outline-pdf", "url": "http://www.idi.zju.edu.cn/wp-content/uploads/2026/06/5a10a6eff6ff5a5216ab38c7b6cd3253-2.pdf", "urlSha256": "378eeaf3696fe02c58b0bfdd0fadcd6106afb916fd9633b091a22968f5851a84" }
+  ],
+  "exam337": {
+    "total": 150,
+    "parts": [
+      { "id": "337-foundations", "points": 75, "topics": ["user-centered design", "design thinking", "sustainability", "AI-assisted design", "descriptive statistics", "inferential statistics", "visualization", "clustering", "classification", "research application"] },
+      { "id": "337-engineering", "points": 75, "topics": ["product development", "ergonomics", "prototyping", "materials", "cost", "intellectual property", "AI", "deep neural networks", "reinforcement learning", "generative AI", "agents", "workflows", "large language models"] }
+    ]
+  },
+  "exam902": {
+    "total": 150,
+    "parts": [
+      { "id": "902-critique", "points": 50, "topics": ["critical analysis", "problem reframing"] },
+      { "id": "902-system", "points": 50, "topics": ["technology choice", "system chain", "diverse users", "inclusion"] },
+      { "id": "902-expression", "points": 50, "topics": ["A3 expression", "technical plan", "fallback", "weakest link", "metrics", "data", "ethics"] }
+    ]
+  },
+  "calibration": { "status": "baseline", "acceptedOfficialMaterials": [], "pastQuestions": [], "notes": "Append only verified official material; record supersession explicitly." },
+  "documentSha256": "COMPUTED_AT_RUNTIME"
+}

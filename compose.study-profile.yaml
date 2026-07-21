@@ -1,0 +1,12 @@
+services:
+  scheduler:
+    environment:
+      DESIGNSIGNAL_STUDY_PROFILE_FILE: /run/secrets/designsignal_study_profile
+    secrets:
+      - source: designsignal_study_profile
+        target: designsignal_study_profile
+        mode: 0444
+
+secrets:
+  designsignal_study_profile:
+    file: "${DESIGNSIGNAL_STUDY_PROFILE_HOST_FILE:?Set DESIGNSIGNAL_STUDY_PROFILE_HOST_FILE to the host study-profile JSON file}"

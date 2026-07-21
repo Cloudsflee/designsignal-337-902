@@ -1,0 +1,44 @@
+name: DesignSignal daily
+on:
+  schedule:
+    - cron: "50 15 * * *"
+  workflow_dispatch:
+concurrency:
+  group: designsignal-daily-${{ github.ref }}
+  cancel-in-progress: false
+permissions:
+  contents: read
+jobs:
+  daily:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - run: node --test
+      - run: node src/cli.mjs doctor
+      - run: node src/cli.mjs daily
+        env:
+          DESIGNSIGNAL_DATA_DIR: data
+          OPENAI_BASE_URL: ${{ vars.OPENAI_BASE_URL || 'https://api.openai.com/v1' }}
+          OPENAI_MODEL: ${{ vars.OPENAI_MODEL }}
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          DESIGNSIGNAL_WEBHOOK_URL: ${{ secrets.DESIGNSIGNAL_WEBHOOK_URL }}
+          FEISHU_WEBHOOK_URL: ${{ secrets.FEISHU_WEBHOOK_URL }}
+          WECOM_WEBHOOK_URL: ${{ secrets.WECOM_WEBHOOK_URL }}
+          FEISHU_APP_ID: ${{ vars.FEISHU_APP_ID }}
+          FEISHU_APP_SECRET: ${{ secrets.FEISHU_APP_SECRET }}
+          FEISHU_DOC_FOLDER_TOKEN: ${{ secrets.FEISHU_DOC_FOLDER_TOKEN }}
+          FEISHU_TENANT_BASE_URL: ${{ vars.FEISHU_TENANT_BASE_URL || 'https://feishu.cn' }}
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: designsignal-${{ github.run_id }}
+          path: |
+            data/reports/
+            data/manifest.ndjson
+            data/outbox/
+          if-no-files-found: warn
+          retention-days: 30
