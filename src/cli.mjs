@@ -11,6 +11,7 @@ import { parseArgs, redact } from './lib/util.mjs';
 import { fixtureCandidates } from '../fixtures/daily.mjs';
 import { selectDaily } from './lib/select.mjs';
 import { buildReport } from './lib/report.mjs';
+import { latestExecutionRun, readExecutionRun, supersedeExecutionRun } from './lib/runtime.mjs';
 
 const [command, ...rest] = process.argv.slice(2), args = parseArgs(rest);
 const config = await loadConfig({ configPath: args.config === true ? undefined : args.config });
@@ -24,6 +25,11 @@ try {
   } else if (command === 'serve') {
     const server = await serve(config); process.stdout.write(`DesignSignal listening on http://${config.host}:${config.port}\n`);
     const close = () => server.close(() => process.exit(0)); process.on('SIGINT', close); process.on('SIGTERM', close);
+  } else if (command === 'run' && args._[0] === 'show') {
+    print(typeof args.date === 'string' ? await readExecutionRun(config.dataDir, args.date) : await latestExecutionRun(config.dataDir));
+  } else if (command === 'run' && args._[0] === 'restart') {
+    if (typeof args.date !== 'string') throw new Error('run restart requires --date YYYY-MM-DD');
+    print(await supersedeExecutionRun(config.dataDir, args.date, { reason: typeof args.reason === 'string' ? args.reason : undefined }));
   } else if (command === 'doctor') {
     const checks = [];
     checks.push({ name: 'node', ok: Number(process.versions.node.split('.')[0]) >= 24, detail: process.versions.node });
@@ -41,5 +47,5 @@ try {
     const ok = checks.every(x => x.ok); print({ ok, checks, modelConfigured: Boolean(config.model.model && config.model.token), feishuDocumentConfigured, deliveryConfigured }); if (!ok) process.exitCode = 1;
   } else if (command === 'schedule') await runScheduler(() => daily(config), { timeZone: config.timezone });
   else if (command === 'push' && args._[0] === 'retry') print(await retryOutbox(config.dataDir, config));
-  else { process.stderr.write('Usage: node src/cli.mjs collect|daily|serve|doctor|schedule|push retry [--fixture] [--dry-run] [--json] [--config PATH]\n'); process.exitCode = 2; }
+  else { process.stderr.write('Usage: node src/cli.mjs collect|daily|serve|doctor|schedule|push retry|run show|run restart [--date YYYY-MM-DD] [--fixture] [--dry-run] [--json] [--config PATH]\n'); process.exitCode = 2; }
 } catch (error) { process.stderr.write(`${redact(error.message)}\n`); process.exitCode = 1; }

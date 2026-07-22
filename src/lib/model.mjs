@@ -233,11 +233,14 @@ const boundedItem = item => ({
   exam: item.exam, citations: item.citations, confidence: item.confidence
 });
 
-export async function synthesizeDaily(items, config, ctx = {}) {
+export async function synthesizeDaily(items, config, ctx = {}, captured = {}) {
   if (!Array.isArray(items) || items.length !== 6) throw new Error('synthesis requires six validated items');
   items.forEach(validateItem);
-  const evidence = await loadExamEvidence();
-  const [studyProfile, recentFeedback] = await Promise.all([loadStudyProfile(config), loadRecentFeedback(config)]);
+  const evidence = captured.examEvidence || await loadExamEvidence();
+  const [studyProfile, recentFeedback] = await Promise.all([
+    Object.hasOwn(captured, 'studyProfile') ? captured.studyProfile : loadStudyProfile(config),
+    Object.hasOwn(captured, 'recentFeedback') ? captured.recentFeedback : loadRecentFeedback(config)
+  ]);
   const allowedEvidenceLinks = [...new Set([...items.flatMap(item => item.citations.map(citation => citation.url)), ...evidence.sources.map(source => source.url)])];
   const input = {
     items: items.map(boundedItem),

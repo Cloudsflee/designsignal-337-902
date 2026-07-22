@@ -56,8 +56,8 @@ function offlineSynthesis(items, evidence) {
     }
   };
 }
-export async function buildReport({ date, items, rejected, health, selectionPolicy, assetAudit = [], fixture = false, generated = null }) {
-  const evidence = await loadExamEvidence();
+export async function buildReport({ date, items, rejected, health, selectionPolicy, assetAudit = [], fixture = false, generated = null, examEvidence = null }) {
+  const evidence = examEvidence || await loadExamEvidence();
   if (!fixture && !generated) throw new Error('live report requires dynamic synthesis');
   const content = generated || offlineSynthesis(items, evidence);
   const report = {
