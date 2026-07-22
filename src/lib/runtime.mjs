@@ -512,6 +512,66 @@ export async function readExecutionRun(dataDir, date, { verifyAssets = true } = 
   return publicExecutionRun(record);
 }
 
+export async function verifyExecutionRun(dataDir, date) {
+  if (!isIsoDate(date)) throw new Error('invalid run date');
+  const file = runFile(dataDir, date);
+  let firstBytes, metadata;
+  try {
+    metadata = await lstat(file);
+    if (!metadata.isFile() || metadata.isSymbolicLink() || metadata.size > MAX_RUN_BYTES) throw new Error('invalid execution run file');
+    firstBytes = await readFile(file);
+  } catch (error) {
+    if (error.code === 'ENOENT') throw new Error(`execution run not found for ${date}`);
+    throw error;
+  }
+  const runMetadataSha256 = sha256(firstBytes);
+  const record = assertRun(JSON.parse(firstBytes.toString('utf8')), date);
+  let verifiedBindings = 0;
+  const verifiedAssetVersions = new Set();
+
+  for (const stage of record.stages) {
+    for (const binding of stage.output_bindings) {
+      assertBindingAsset(binding, await readAsset(dataDir, date, binding.version_id));
+      verifiedBindings++;
+      verifiedAssetVersions.add(binding.version_id);
+    }
+  }
+
+  const secondBytes = await readFile(file);
+  if (sha256(secondBytes) !== runMetadataSha256) throw new Error('execution run changed during integrity audit');
+
+  return {
+    schema_version: 'designsignal.run_verify_result.v1',
+    ok: true,
+    date: record.date,
+    run_id: record.run_id,
+    revision: record.revision,
+    state: record.state,
+    run_schema_version: record.schema_version,
+    execution_context_schema: record.execution_context_schema,
+    input_snapshot_hash: record.input_snapshot_hash,
+    repository_snapshot_hash: record.repository_snapshot_hash,
+    stage_count: record.stages.length,
+    completed_stage_count: record.stages.filter(stage => stage.state === 'completed').length,
+    verified_bindings: verifiedBindings,
+    verified_assets: verifiedAssetVersions.size,
+    run_metadata_sha256: runMetadataSha256,
+    stages: record.stages.map(stage => ({
+      id: stage.id,
+      state: stage.state,
+      input_snapshot_hash: stage.input_snapshot_hash,
+      output: stage.state === 'completed' && stage.output_bindings.length === 1 ? {
+        key: stage.output_bindings[0].key,
+        asset_id: stage.output_bindings[0].asset_id,
+        asset_type: stage.output_bindings[0].asset_type,
+        version_id: stage.output_bindings[0].version_id,
+        sha256: stage.output_bindings[0].sha256,
+        derived_from: [...stage.output_bindings[0].derived_from]
+      } : null
+    }))
+  };
+}
+
 export async function latestExecutionRun(dataDir) {
   let names;
   try { names = await readdir(path.join(dataDir, 'runs')); }

@@ -21,6 +21,14 @@ node src/cli.mjs run show
 node src/cli.mjs run show --date 2026-07-22
 ```
 
+Verify a selected run and all currently bound immutable asset envelopes without touching state:
+
+```sh
+node src/cli.mjs run verify --date 2026-07-22 --json
+```
+
+`run verify` requires an explicit date. It validates the current run metadata and every content-addressed output binding, and it fails rather than fabricating stage records for legacy reports. `ok: true` means the recorded metadata and bound assets passed integrity checks; inspect `state`, `completed_stage_count`, and per-stage `state` to distinguish a complete run from an internally consistent incomplete run. Failures exit non-zero with a redacted stderr diagnostic, no stdout success body, and no repair or mutation.
+
 A process restart verifies every completed output and resumes from the first unfinished stage. A stage left `running` is retried in place and increments its attempt count. If an immutable asset is missing, altered, or rebound, or if current run parameters no longer match the root snapshot, execution stops with `task_context_not_ready`. It does not overwrite an upstream version or silently regenerate dependent outputs. If the report was atomically published before the integration stage record was finalized, a normal `daily --date ...` recovery reconciles the manifest and finishes only the integration receipt.
 
 For an incomplete run whose inputs intentionally changed, archive the old metadata and explicitly start a new revision:
