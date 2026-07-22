@@ -10,6 +10,28 @@ For a native CLI process, `DESIGNSIGNAL_STUDY_PROFILE_FILE` may point to a prote
 
 Missing delivery configuration is normal: the report remains published. The Feishu document job stays pending with `missing-feishu-document-config`, while each webhook job stays pending without being rewritten. Add the required values and run `node src/cli.mjs push retry`. Queue creation and every retry share `data/locks/outbox.lock`, so scheduled daily work and manual retry cannot mutate the outbox concurrently. Definite document API rejections and tenant-token failures use capped exponential backoff. In-flight create/write jobs and ambiguous side-effecting requests stop as `reconciliation-required` because creating a second document or duplicating root blocks would be unsafe. `/api/outbox` returns a fixed safe metadata projection and represents malformed JSON files as `invalid`; it never returns payloads, configured endpoints, or credentials.
 
+## Execution DAG and recovery
+
+Every live date persists `data/runs/YYYY-MM-DD/run.json` using `aiws.task_execution_context.v2`. Its six ordered stages are `evidence`, `constraints`, `decision`, `execution`, `acceptance`, and `integration`. Each stage records its contract v2 input slots, exact input snapshot hash, attempts, state, blocking dependencies, confirmed output binding, and direct `derived_from` versions. Output envelopes are content-addressed and immutable under `data/runs/YYYY-MM-DD/assets/av_<sha256>.json`; the public API and dashboard return only bindings and hashes, never asset payloads or captured private study context.
+
+Inspect the latest run or a selected date without touching state:
+
+```sh
+node src/cli.mjs run show
+node src/cli.mjs run show --date 2026-07-22
+```
+
+A process restart verifies every completed output and resumes from the first unfinished stage. A stage left `running` is retried in place and increments its attempt count. If an immutable asset is missing, altered, or rebound, or if current run parameters no longer match the root snapshot, execution stops with `task_context_not_ready`. It does not overwrite an upstream version or silently regenerate dependent outputs. If the report was atomically published before the integration stage record was finalized, a normal `daily --date ...` recovery reconciles the manifest and finishes only the integration receipt.
+
+For an incomplete run whose inputs intentionally changed, archive the old metadata and explicitly start a new revision:
+
+```sh
+node src/cli.mjs run restart --date 2026-07-22 --reason "approved source policy update"
+node src/cli.mjs daily --date 2026-07-22
+```
+
+The archived run remains under `data/runs/YYYY-MM-DD/revisions/`, and content-addressed assets remain available for audit. `run restart` refuses completed runs and any date whose report has already been published. Old schema v2/v3/v4 reports without a run record stay readable and display `legacy_unverified`; do not create synthetic stage records for them.
+
 ## Webhook delivery
 
 Set any combination of `DESIGNSIGNAL_WEBHOOK_URL`, `FEISHU_WEBHOOK_URL`, and `WECOM_WEBHOOK_URL` for generic JSON, Feishu text, and WeCom text delivery. Endpoints must be credential-free HTTPS URLs; query-string webhook keys are supported, remain in process memory, and are never written to an outbox file or report. Every send validates all DNS answers, blocks private and reserved addresses, and pins the validated address set into the TLS request to prevent rebinding between validation and connection. A job is posted once per due retry cycle with `Idempotency-Key: designsignal-<job-id>`. HTTP 408, 425, 429, and 5xx failures remain pending with capped exponential backoff; other 4xx responses also remain visible but are not replayed inside the same process attempt.
