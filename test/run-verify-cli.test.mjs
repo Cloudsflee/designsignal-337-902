@@ -36,29 +36,17 @@ const minimalConfig = dataDir => ({
 const exists = file => stat(file).then(() => true, () => false);
 
 async function runCli(args, { env = cleanEnv() } = {}) {
-  const captureDir = await mkdtemp(path.join(os.tmpdir(), 'ds-cli-capture-'));
-  const stdoutPath = path.join(captureDir, 'stdout');
-  const stderrPath = path.join(captureDir, 'stderr');
-  const codePath = path.join(captureDir, 'code');
-  const shellQuote = value => `'${String(value).replaceAll("'", "'\\''")}'`;
-  const command = `${[process.execPath, 'src/cli.mjs', ...args].map(shellQuote).join(' ')} >${shellQuote(stdoutPath)} 2>${shellQuote(stderrPath)}; printf '%s' "$?" >${shellQuote(codePath)}`;
-  try {
-    await new Promise(resolve => {
-      execFile('/bin/sh', ['-c', command], {
-        cwd: root,
-        env,
-        encoding: 'utf8',
-        maxBuffer: 1024 * 1024
-      }, () => resolve());
+  return new Promise((resolve, reject) => {
+    execFile(process.execPath, ['src/cli.mjs', ...args], {
+      cwd: root,
+      env,
+      encoding: 'utf8',
+      maxBuffer: 1024 * 1024
+    }, (error, stdout, stderr) => {
+      if (error && typeof error.code !== 'number') return reject(error);
+      resolve({ code: error?.code ?? 0, stdout, stderr });
     });
-    return {
-      code: Number(await readFile(codePath, 'utf8')),
-      stdout: await readFile(stdoutPath, 'utf8').catch(() => ''),
-      stderr: await readFile(stderrPath, 'utf8').catch(() => '')
-    };
-  } finally {
-    await rm(captureDir, { recursive: true, force: true });
-  }
+  });
 }
 
 async function writeConfig(parent, dataDir) {
