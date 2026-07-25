@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, readFile, readdir, rm } from 'node:fs/promises';
+import { mkdtemp, readFile, rm } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { fixtureCandidates } from '../fixtures/daily.mjs';
@@ -75,25 +75,6 @@ test('schema v4 strictly derives named groups, official totals, references and r
   }
 });
 
-test('v2/v3 compatibility views are deterministic and do not mutate legacy reports', async () => {
-  const current = await fixtureReport();
-  for (const version of [2, 3]) {
-    const legacy = structuredClone(current);
-    legacy.schemaVersion = version;
-    delete legacy.briefing;
-    if (version === 2) delete legacy.audit.selectionPolicy.priorityInstitutionPaper;
-    const before = JSON.stringify(legacy), first = briefingView(legacy), second = briefingView(legacy);
-    assert.equal(JSON.stringify(legacy), before);
-    assert.deepEqual(first, second);
-    first.sections[0].items[0].title.en = 'changed view only';
-    assert.equal(JSON.stringify(legacy), before);
-    assert.deepEqual(first.sections.map(x => [x.id, x.items.length]), [
-      ['academic-evidence', 2], ['design-reference', 2], ['frontier-radar', 2]
-    ]);
-    assert.equal(validateReport(legacy), legacy);
-  }
-});
-
 test('Markdown, HTML and Feishu keep thesis patterns, group maps and item analysis in parity', async () => {
   const report = await fixtureReport();
   const view = briefingView(report), markdown = renderMarkdown(report), html = renderHtml(report), feishu = JSON.stringify(renderFeishuBlocks(report));
@@ -118,23 +99,6 @@ test('Markdown, HTML and Feishu keep thesis patterns, group maps and item analys
   assert.equal((html.match(/data-filter=/g) || []).length, 5);
   assert.match(html, /<form method="post" action="\/api\/feedback">/);
   assert.ok(renderFeishuBlocks(report).every(block => Number.isInteger(block.block_type)));
-});
-
-test('one document identity is queued while legacy jobs remain byte-for-byte untouched', async () => {
-  const dir = await mkdtemp(path.join(os.tmpdir(), 'ds-feishu-legacy-')), report = await fixtureReport();
-  try {
-    const legacy = '{"id":"legacy","channel":"feishu","state":"pending","payload":{"old":true}}\n';
-    await atomicWrite(path.join(dir, 'outbox', 'legacy.json'), legacy);
-    const config = { feishuDocument: { appId: '', appSecret: '', folderToken: '', tenantBaseUrl: 'https://feishu.cn' } };
-    const first = await queueDeliveries(dir, report, config), second = await queueDeliveries(dir, report, config);
-    assert.equal(first.length, 4);
-    assert.equal(second[0].id, first[0].id);
-    assert.equal(first[0].channel, 'feishu-document');
-    assert.equal((await readdir(path.join(dir, 'outbox'))).length, 5);
-    assert.equal(await readFile(path.join(dir, 'outbox', 'legacy.json'), 'utf8'), legacy);
-    await retryOutbox(dir, config);
-    assert.equal(await readFile(path.join(dir, 'outbox', 'legacy.json'), 'utf8'), legacy);
-  } finally { await rm(dir, { recursive: true, force: true }); }
 });
 
 test('more than 100 Feishu blocks are written as exact ordered chunks of at most 50', async () => {

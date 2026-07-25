@@ -187,7 +187,7 @@ export async function handleDashboardRequest(config, req, res) {
         catch { throw new Error('feedback storage failed'); }
         res.writeHead(303, { location: '/' }); return res.end();
       }
-      if (req.method === 'GET' && url.pathname === '/') { const report = await latestReport(config.dataDir); if (!report) { res.writeHead(503, { 'content-type': 'text/plain; charset=utf-8' }); return res.end('No report yet. Run daily first.'); } const latestRun = await latestExecutionRun(config.dataDir); const reportRun = latestRun?.date === report.date ? latestRun : await readExecutionRun(config.dataDir, report.date); const run = latestRun?.date >= report.date ? latestRun : reportRun; const html = renderHtml(report, { run, showPipeline: true }); res.writeHead(200, { 'content-type': 'text/html; charset=utf-8', 'content-length': Buffer.byteLength(html) }); return res.end(html); }
+      if (req.method === 'GET' && url.pathname === '/') { const report = await latestReport(config.dataDir); if (!report) { res.writeHead(503, { 'content-type': 'text/plain; charset=utf-8' }); return res.end('No report yet. Run daily first.'); } const run = await readExecutionRun(config.dataDir, report.date); const html = renderHtml(report, { run, showPipeline: Boolean(run) }); res.writeHead(200, { 'content-type': 'text/html; charset=utf-8', 'content-length': Buffer.byteLength(html) }); return res.end(html); }
       return json(res, 404, { error: 'not found' });
     } catch (error) { return json(res, /too large/.test(error.message) ? 413 : 500, { error: error.message }); }
 }

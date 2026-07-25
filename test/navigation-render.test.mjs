@@ -15,35 +15,25 @@ const tocBody = html => html.match(/<nav class="toc-nav"[\s\S]*?<\/nav>/)?.[0] |
 const tocAnchors = html => [...tocBody(html).matchAll(/<a href="#([^"]+)">/g)].map(match => match[1]);
 const targetAnchors = html => [...html.matchAll(/<(?:section|article)[^>]*\sid="([^"]+)"[^>]*\sdata-toc-target(?:\s|>)/g)].map(match => match[1]);
 
-test('TOC anchors are unique, resolvable, deterministic, and ordered for schema v2/v3/v4', async () => {
-  const current = await fixtureReport();
-  for (const version of [2, 3, 4]) {
-    const report = structuredClone(current);
-    report.schemaVersion = version;
-    if (version < 4) delete report.briefing;
-    if (version === 2) delete report.audit.selectionPolicy.priorityInstitutionPaper;
-    const first = renderHtml(report), second = renderHtml(report);
-    const links = tocAnchors(first), targets = targetAnchors(first);
-    assert.equal(links.length, 15);
-    assert.deepEqual(links, targets);
-    assert.deepEqual(links, tocAnchors(second));
-    assert.equal(new Set(links).size, links.length);
-    for (const anchor of links) assert.equal((first.match(new RegExp(`id="${anchor}"`, 'g')) || []).length, 1);
-  }
+test('TOC anchors are unique, resolvable, deterministic, and ordered for schema v4', async () => {
+  const report = await fixtureReport(), first = renderHtml(report), second = renderHtml(report);
+  const links = tocAnchors(first), targets = targetAnchors(first);
+  assert.equal(links.length, 15);
+  assert.deepEqual(links, targets);
+  assert.deepEqual(links, tocAnchors(second));
+  assert.equal(new Set(links).size, links.length);
+  for (const anchor of links) assert.equal((first.match(new RegExp(`id="${anchor}"`, 'g')) || []).length, 1);
 });
 
 test('briefing TOC contains three groups and exactly six escaped nested item links', async () => {
   const report = await fixtureReport();
-  report.schemaVersion = 2;
-  delete report.briefing;
-  delete report.audit.selectionPolicy.priorityInstitutionPaper;
-  report.items[0].title = { zh: '<旧标签 & 一>', en: 'Legacy "label" & one' };
+  report.items[0].title = { zh: '<标签 & 一>', en: 'Current "label" & one' };
   const html = renderHtml(report), toc = tocBody(html);
   assert.equal((toc.match(/href="#briefing-/g) || []).length, 3);
   assert.equal((toc.match(/href="#signal-/g) || []).length, 6);
-  assert.match(toc, /&lt;旧标签 &amp; 一&gt;/);
-  assert.match(toc, /Legacy &quot;label&quot; &amp; one/);
-  assert.doesNotMatch(toc, /<旧标签|Legacy "label"/);
+  assert.match(toc, /&lt;标签 &amp; 一&gt;/);
+  assert.match(toc, /Current &quot;label&quot; &amp; one/);
+  assert.doesNotMatch(toc, /<标签|Current "label"/);
   assert.equal((toc.match(/<ol><li><a href="#signal-/g) || []).length, 3);
 });
 

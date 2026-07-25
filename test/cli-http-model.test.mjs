@@ -11,7 +11,6 @@ import { handleDashboardRequest } from '../src/lib/server.mjs';
 import { enrichItem } from '../src/lib/model.mjs';
 import { daily } from '../src/lib/daily.mjs';
 import { loadConfig } from '../src/lib/config.mjs';
-import { sha256 } from '../src/lib/util.mjs';
 
 const exists = file => stat(file).then(() => true, () => false);
 async function fixtureReport() { const s = selectDaily(fixtureCandidates, { date: '2026-07-19', history: [] }); return buildReport({ date: '2026-07-19', items: s.selected, rejected: s.rejected, health: [], selectionPolicy: s.policy, fixture: true }); }
@@ -37,23 +36,14 @@ test('HTTP dashboard escapes untrusted content and sends security headers/APIs',
   const home = await invoke(dir, '/'); assert.doesNotMatch(home.body, /<script>alert\(1\)<\/script>/); assert.match(home.body, /&lt;script&gt;alert/); assert.match(home.body, /data-category="product"/);
   const api = await invoke(dir, '/api/report'); assert.equal(JSON.parse(api.body).items.length, 6);
 
-  const legacyDir = await mkdtemp(path.join(os.tmpdir(), 'ds-http-v2-'));
-  const legacy = await fixtureReport(); await writeReport(legacyDir, legacy); legacy.schemaVersion = 2; delete legacy.audit.selectionPolicy.priorityInstitutionPaper;
-  const legacyJson = `${JSON.stringify(legacy, null, 2)}\n`;
-  await writeFile(path.join(legacyDir, 'reports', legacy.date, 'report.json'), legacyJson);
-  const manifestFile = path.join(legacyDir, 'manifest.ndjson'), manifest = JSON.parse((await readFile(manifestFile, 'utf8')).trim());
-  manifest.sha256 = sha256(legacyJson); await writeFile(manifestFile, `${JSON.stringify(manifest)}\n`);
-  const legacyApi = await invoke(legacyDir, '/api/report'); assert.equal(legacyApi.status, 200); assert.equal(JSON.parse(legacyApi.body).schemaVersion, 2);
-
   const reportFile = path.join(dir, 'reports', report.date, 'report.json');
   const tampered = JSON.parse(await readFile(reportFile, 'utf8')); delete tampered.audit.selectionPolicy.priorityInstitutionPaper;
   await writeFile(reportFile, `${JSON.stringify(tampered, null, 2)}\n`);
   const rejected = await invoke(dir, '/api/report'); assert.equal(rejected.status, 500); assert.match(JSON.parse(rejected.body).error, /manifest hash mismatch/);
-  await rm(legacyDir, { recursive: true, force: true });
   await rm(dir, { recursive: true, force: true });
 });
 
-test('outbox API returns a safe metadata projection for legacy or malformed jobs', async () => {
+test('outbox API returns a safe metadata projection for malformed jobs', async () => {
   const dir = await mkdtemp(path.join(os.tmpdir(), 'ds-http-outbox-'));
   try {
     await mkdir(path.join(dir, 'outbox'));

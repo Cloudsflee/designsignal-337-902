@@ -19,14 +19,15 @@ async function fixtureReport() {
   return buildReport({ date: '2026-07-19', items: selected.selected, rejected: selected.rejected, health: [], selectionPolicy: selected.policy, fixture: true });
 }
 
-test('legacy webhook identities and payload schema are preserved byte-for-byte without endpoints', async () => {
-  const dir = await mkdtemp(path.join(os.tmpdir(), 'ds-webhook-legacy-'));
+test('versioned webhook identities remain byte-for-byte stable without endpoints', async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), 'ds-webhook-current-'));
   try {
     const report = await fixtureReport(), config = emptyConfig();
     const queued = await queueDeliveries(dir, report, config);
     const webhooks = queued.filter(job => ['generic', 'feishu', 'wecom'].includes(job.channel));
     assert.deepEqual(webhooks.map(job => job.id), webhooks.map(job => sha256(`${report.date}:${job.channel}`).slice(0, 24)));
-    assert.deepEqual(Object.keys(webhooks[0]), ['id', 'channel', 'reportDate', 'endpointConfigured', 'state', 'reason', 'attempts', 'nextAttemptAt', 'createdAt', 'payload']);
+    assert.deepEqual(Object.keys(webhooks[0]), ['schemaVersion', 'id', 'channel', 'reportDate', 'endpointConfigured', 'state', 'reason', 'attempts', 'nextAttemptAt', 'createdAt', 'payload']);
+    assert.ok(webhooks.every(job => job.schemaVersion === 1));
     const generic = webhooks.find(job => job.channel === 'generic');
     assert.equal(generic.payload.event, 'designsignal.daily');
     assert.equal(generic.payload.itemCount, 6);
@@ -50,7 +51,7 @@ test('legacy webhook identities and payload schema are preserved byte-for-byte w
   } finally { await rm(dir, { recursive: true, force: true }); }
 });
 
-test('invalid calendar webhook report dates are ignored before delivery', async () => {
+test('invalid calendar webhook report dates are rejected before delivery', async () => {
   const dir = await mkdtemp(path.join(os.tmpdir(), 'ds-webhook-invalid-date-'));
   try {
     const report = await fixtureReport();
@@ -59,8 +60,7 @@ test('invalid calendar webhook report dates are ignored before delivery', async 
     const file = path.join(dir, 'outbox', `${jobs[0].id}.json`);
     const stored = JSON.parse(await readFile(file, 'utf8')); stored.reportDate = '2026-02-30';
     await writeFile(file, JSON.stringify(stored));
-    const result = await retryWebhookOutbox(dir, config, { fetchImpl: async () => assert.fail('network must not be reached') });
-    assert.equal(result.some(job => job.id === jobs[0].id), false);
+    await assert.rejects(() => retryWebhookOutbox(dir, config, { fetchImpl: async () => assert.fail('network must not be reached') }), /invalid webhook report identity/);
   } finally { await rm(dir, { recursive: true, force: true }); }
 });
 

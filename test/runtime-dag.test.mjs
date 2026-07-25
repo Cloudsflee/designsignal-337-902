@@ -169,6 +169,7 @@ test('a report-write crash window completes only integration and exposes the DAG
 
     await openExecutionSession(dir, createRunInput(config, '2026-07-23', { mode: 'live' }));
     const active = await invoke(config, '/');
-    assert.match(active.body, /2026-07-23 · pending · snapshot/);
+    assert.match(active.body, /2026-07-22 · completed · snapshot/);
+    assert.doesNotMatch(active.body, /2026-07-23 · pending · snapshot/);
   } finally { await rm(dir, { recursive: true, force: true }); }
 });

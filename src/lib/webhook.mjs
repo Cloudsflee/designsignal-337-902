@@ -4,8 +4,14 @@ import { HttpStatusError, safeFetch } from './network.mjs';
 import { atomicWrite, isIsoDate, sha256 } from './util.mjs';
 
 const CHANNELS = ['generic', 'feishu', 'wecom'];
+export const WEBHOOK_JOB_VERSION = 1;
 const MISSING_ENDPOINT = 'missing-secret-or-endpoint';
 const MAX_RESPONSE_BYTES = 64 * 1024;
+const WEBHOOK_JOB_FIELDS = new Set([
+  'schemaVersion', 'id', 'channel', 'reportDate', 'endpointConfigured', 'state', 'reason',
+  'attempts', 'nextAttemptAt', 'createdAt', 'payload', 'deliveredAt'
+]);
+const REQUIRED_WEBHOOK_JOB_FIELDS = [...WEBHOOK_JOB_FIELDS].filter(field => field !== 'deliveredAt');
 
 const payload = (channel, report) => {
   const text = `DesignSignal ${report.date}: ${report.items.map(item => item.title.zh).join('；')}`;
@@ -28,6 +34,7 @@ const nowValue = ctx => Number(ctx.now?.() ?? Date.now());
 function expectedJob(report, channel, config, createdAt) {
   const endpoint = endpointFor(config, channel);
   return {
+    schemaVersion: WEBHOOK_JOB_VERSION,
     id: jobId(report.date, channel), channel, reportDate: report.date,
     endpointConfigured: Boolean(endpoint), state: 'pending',
     reason: endpoint ? 'queued' : MISSING_ENDPOINT, attempts: 0,
@@ -35,18 +42,17 @@ function expectedJob(report, channel, config, createdAt) {
   };
 }
 
-function compatibleIdentity(stored, expected, filename) {
-  return stored?.id === expected.id && filename === `${expected.id}.json` &&
-    stored.channel === expected.channel && stored.reportDate === expected.reportDate &&
-    JSON.stringify(stored.payload) === JSON.stringify(expected.payload);
-}
-
-function validStoredJob(job, filename) {
-  if (!CHANNELS.includes(job?.channel) || filename !== `${job.id}.json`) return false;
-  if (!isIsoDate(job.reportDate) || job.id !== jobId(job.reportDate, job.channel)) return false;
-  if (!['pending', 'delivered'].includes(job.state) || !Number.isSafeInteger(job.attempts) || job.attempts < 0) return false;
-  if (!Number.isFinite(Date.parse(job.nextAttemptAt)) || !validPayload(job.channel, job.payload, job.reportDate)) return false;
-  return true;
+export function assertStoredWebhookJob(job, filename) {
+  if (job?.schemaVersion !== WEBHOOK_JOB_VERSION || !CHANNELS.includes(job?.channel) || filename !== `${job.id}.json`) throw new Error('invalid webhook job identity');
+  if (Object.keys(job).some(key => !WEBHOOK_JOB_FIELDS.has(key)) || REQUIRED_WEBHOOK_JOB_FIELDS.some(key => !(key in job))) throw new Error('invalid webhook job fields');
+  if (!isIsoDate(job.reportDate) || job.id !== jobId(job.reportDate, job.channel)) throw new Error('invalid webhook report identity');
+  if (!['pending', 'delivered'].includes(job.state) || !Number.isSafeInteger(job.attempts) || job.attempts < 0) throw new Error('invalid webhook job state');
+  if (typeof job.endpointConfigured !== 'boolean' || typeof job.reason !== 'string' || job.reason.length > 240 ||
+      !Number.isFinite(Date.parse(job.createdAt)) || !Number.isFinite(Date.parse(job.nextAttemptAt)) ||
+      (job.state === 'delivered' && !Number.isFinite(Date.parse(job.deliveredAt))) ||
+      (job.deliveredAt !== undefined && !Number.isFinite(Date.parse(job.deliveredAt))) ||
+      !validPayload(job.channel, job.payload, job.reportDate)) throw new Error('invalid webhook job payload');
+  return job;
 }
 
 function validPayload(channel, value, reportDate) {
@@ -76,7 +82,9 @@ export async function queueWebhookDeliveries(dataDir, report, config) {
         stored = JSON.parse(await readFile(file, 'utf8'));
       }
     }
-    if (!compatibleIdentity(stored, expected, path.basename(file))) throw new Error(`conflicting outbox job identity for ${expected.id}`);
+    try { assertStoredWebhookJob(stored, path.basename(file)); }
+    catch { throw new Error(`conflicting outbox job identity for ${expected.id}`); }
+    if (stored.id !== expected.id || stored.channel !== expected.channel || stored.reportDate !== expected.reportDate || JSON.stringify(stored.payload) !== JSON.stringify(expected.payload)) throw new Error(`conflicting outbox job identity for ${expected.id}`);
     jobs.push(stored);
   }
   return jobs;
@@ -111,7 +119,8 @@ export async function retryWebhookOutbox(dataDir, config, ctx = {}) {
   for (const name of files.filter(file => file.endsWith('.json')).sort()) {
     const file = path.join(dir, name);
     const job = JSON.parse(await readFile(file, 'utf8'));
-    if (!CHANNELS.includes(job.channel) || !validStoredJob(job, name)) continue;
+    if (!CHANNELS.includes(job.channel)) continue;
+    assertStoredWebhookJob(job, name);
     if (job.state === 'delivered' || new Date(job.nextAttemptAt).getTime() > nowValue(ctx)) { results.push(job); continue; }
     const endpoint = endpointFor(config, job.channel);
     if (!endpoint) { results.push(job); continue; }
