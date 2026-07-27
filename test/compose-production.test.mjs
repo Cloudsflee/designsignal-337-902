@@ -74,6 +74,7 @@ test('Compose passes Feishu document configuration only to the scheduler', () =>
 });
 
 test('GitHub Actions passes the four Feishu document settings without stale webhooks', () => {
+  assert.match(workflow, /^\s+- cron: "50 15 \* \* \*"$/m);
   for (const name of ['FEISHU_APP_ID', 'FEISHU_APP_SECRET', 'FEISHU_DOC_FOLDER_TOKEN', 'FEISHU_TENANT_BASE_URL']) assert.match(workflow, new RegExp(`^          ${name}:`, 'm'));
   assert.match(workflow, /FEISHU_TENANT_BASE_URL:[^\n]*https:\/\/feishu\.cn/);
   assert.doesNotMatch(workflow, /FEISHU_WEBHOOK_URL|DESIGNSIGNAL_WEBHOOK_URL|WECOM_WEBHOOK_URL/);

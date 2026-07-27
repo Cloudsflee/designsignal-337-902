@@ -41,10 +41,10 @@ const synthesisSchema = {
     hypotheses: {
       type: 'array', items: {
         type: 'object', additionalProperties: false,
-        required: ['claim', 'rationale', 'confidence', 'supportingItemIds', 'counterevidence', 'exam', 'uncertainty'],
+        required: ['claim', 'rationale', 'confidence', 'supportingItemIds', 'evidence', 'counterevidence', 'exam', 'uncertainty'],
         properties: {
           claim: bilingualSchema(), rationale: bilingualSchema(), confidence: { type: 'number' },
-          supportingItemIds: stringArraySchema(),
+          supportingItemIds: stringArraySchema(), evidence: stringArraySchema(),
           counterevidence: { type: 'array', items: bilingualSchema() },
           exam: { type: 'object', additionalProperties: false, required: ['337', '902'], properties: { '337': stringArraySchema(), '902': stringArraySchema() } },
           uncertainty: bilingualSchema()

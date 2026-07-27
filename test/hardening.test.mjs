@@ -10,10 +10,11 @@ import { listingAdapter, collectSources, openAlexAdapter } from '../src/lib/adap
 import { handleDashboardRequest } from '../src/lib/server.mjs';
 import { selectDaily } from '../src/lib/select.mjs';
 import { fixtureCandidates } from '../fixtures/daily.mjs';
-import { daily } from '../src/lib/daily.mjs';
+import { daily, selectDailyWithRequiredAssets } from '../src/lib/daily.mjs';
 import { enrichItem } from '../src/lib/model.mjs';
 import { renderHtml } from '../src/lib/render.mjs';
 import { buildReport } from '../src/lib/report.mjs';
+import { validateReport } from '../src/lib/schema.mjs';
 
 const dnsLookup = async () => [{ address: '8.8.8.8' }];
 const exists = file => stat(file).then(() => true, () => false);
@@ -206,6 +207,91 @@ test('cached images render only their local cache reference and retain remote pr
   assert.equal(product.image.remoteUrl, remoteUrl);
   assert.match(html, new RegExp(`src="/assets/${hash}"`));
   assert.ok(!html.includes(`src="${remoteUrl}"`));
+});
+
+test('live asset selection retries product or UI candidates whose required image cannot be cached', async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), 'ds-asset-retry-'));
+  const original = fixtureCandidates.find(item => item.category === 'product');
+  const backup = structuredClone(original);
+  backup.id = 'product-backup-cached-image-20260715';
+  backup.title = { zh: '备选可追溯产品图片案例', en: 'Backup Product With Traceable Image' };
+  backup.source = { ...backup.source, id: 'backup-product', name: 'Backup Product', url: 'https://backup.example/product', locale: 'en' };
+  backup.citations = [{ label: 'Primary source', url: backup.source.url }];
+  backup.image = { ...backup.image, url: 'https://backup.example/product.png' };
+  backup.confidence = 0.7;
+  const candidates = [...fixtureCandidates, backup];
+  const hosts = [...new Set(candidates.flatMap(item => [new URL(item.source.url).hostname, item.image?.url ? new URL(item.image.url).hostname : '']).filter(Boolean))];
+  const png = Buffer.concat([Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]), Buffer.from('backup')]);
+  const config = await loadConfig({ env: { DESIGNSIGNAL_DATA_DIR: dir } });
+  config.network = { ...config.network, allowHosts: hosts, timeoutMs: 100, retries: 0, maxPageBytes: 1000, maxImageBytes: 1000 };
+  const result = await selectDailyWithRequiredAssets(config, candidates, {
+    date: '2026-07-19',
+    history: [],
+    ctx: {
+      dnsLookup,
+      fetchImpl: async url => {
+        if (String(url) === original.image.url) return new Response('', { status: 404 });
+        if (String(url).endsWith('.png') || String(url).endsWith('.jpg')) return new Response(png, { status: 200, headers: { 'content-type': 'image/png' } });
+        return new Response('<html><article>public source</article></html>', { status: 200, headers: { 'content-type': 'text/html' } });
+      }
+    }
+  });
+  assert.ok(!result.selected.some(item => item.id === original.id));
+  assert.ok(result.selected.some(item => item.id === backup.id));
+  assert.ok(result.rejected.some(entry => entry.id === original.id && entry.reason === 'required-asset-failed'));
+  assert.ok(result.persisted.byItem.get(backup.id).some(asset => asset.kind === 'image' && asset.localCacheRef));
+  await rm(dir, { recursive: true, force: true });
+});
+
+test('live daily fails before report or outbox publication when required images all fail', async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), 'ds-asset-fail-'));
+  const config = await loadConfig({ env: { DESIGNSIGNAL_DATA_DIR: dir } });
+  const source = (id, category, locale) => ({ id, name: id, adapter: 'feed', category, locale, url: `https://feeds.example/${id}.xml` });
+  config.sources = [
+    source('paper-a', 'paper', 'en'),
+    source('paper-b', 'paper', 'en'),
+    source('product-a', 'product', 'en'),
+    source('ui-a', 'ui', 'en'),
+    source('frontier-a', 'frontier', 'en'),
+    source('frontier-b', 'frontier', 'zh')
+  ];
+  config.network = { ...config.network, allowHosts: ['feeds.example', 'items.example', 'images.example'], timeoutMs: 100, retries: 0, maxFeedBytes: 2000, maxPageBytes: 1000, maxImageBytes: 1000 };
+  const xmlFor = id => {
+    const image = id.startsWith('product') || id.startsWith('ui') ? `<enclosure url="https://images.example/${id}.png" type="image/png"/>` : '';
+    const title = id === 'frontier-b' ? '中文设计研究前沿材料' : `Design source ${id}`;
+    return `<rss><channel><item><title>${title}</title><link>https://items.example/${id}</link><description>Public design evidence for ${id}</description><pubDate>2026-07-18T08:00:00.000Z</pubDate>${image}</item></channel></rss>`;
+  };
+  await assert.rejects(() => daily(config, {
+    date: '2026-07-19',
+    ctx: {
+      dnsLookup,
+      fetchImpl: async url => {
+        const href = String(url);
+        if (href.startsWith('https://feeds.example/')) return new Response(xmlFor(path.basename(new URL(href).pathname, '.xml')), { status: 200, headers: { 'content-type': 'application/rss+xml' } });
+        if (href.startsWith('https://images.example/')) return new Response('', { status: 503 });
+        return new Response('<html><article>public source</article></html>', { status: 200, headers: { 'content-type': 'text/html' } });
+      }
+    }
+  }), /insufficient validated image assets/);
+  assert.equal(await exists(path.join(dir, 'reports')), false);
+  assert.equal(await exists(path.join(dir, 'outbox')), false);
+  await rm(dir, { recursive: true, force: true });
+});
+
+test('schema v4 live reports require product and UI images to match cached assets', async () => {
+  const selected = selectDaily(fixtureCandidates, { date: '2026-07-19', history: [] });
+  const report = await buildReport({ date: '2026-07-19', items: selected.selected, rejected: selected.rejected, health: [], selectionPolicy: selected.policy, fixture: true });
+  report.fixture = false;
+  for (const item of report.items.filter(entry => ['product', 'ui'].includes(entry.category))) {
+    const hash = item.category === 'product' ? 'b'.repeat(64) : 'c'.repeat(64);
+    const asset = { kind: 'image', url: item.image.url, mime: 'image/png', hash, bytes: 16, retrievedAt: '2026-07-19T00:00:00.000Z', author: item.source.name, institution: item.source.name, accessStatus: 'public-page', licenseStatus: 'linked-only', localCacheRef: `/assets/${hash}` };
+    item.assets = [asset];
+    item.image = { ...item.image, ...asset, url: asset.url, remoteUrl: asset.url };
+  }
+  assert.equal(validateReport(report), report);
+  const invalid = structuredClone(report);
+  delete invalid.items.find(item => item.category === 'ui').image.localCacheRef;
+  assert.throws(() => validateReport(invalid), /cached image/);
 });
 
 test('fixture runs never write even without dry-run', async () => {
