@@ -16,7 +16,8 @@ export async function persistSelectedAssets(config, selected, ctx = {}) {
     const descriptors = [{ kind: 'article', url: item.source.url, maxBytes: config.network.maxPageBytes, accept: 'text/html, text/plain, application/xhtml+xml', accessStatus: 'public-page', licenseStatus: item.rights?.licenseStatus || 'linked-only' }];
     if (item.oaPdf && item.rights?.access === 'open-access') descriptors.push({ kind: 'pdf', url: item.oaPdf, maxBytes: config.network.maxPdfBytes, accept: 'application/pdf', accessStatus: 'open-access', licenseStatus: item.rights?.licenseStatus || 'unknown' });
     else if (item.oaPdf) audit.push({ itemId: item.id, kind: 'pdf', status: 'failed', reason: 'PDF refused: OA status not verified' });
-    if (['product', 'ui'].includes(item.category) && item.imageUrl) descriptors.push({ kind: 'image', url: item.imageUrl, maxBytes: config.network.maxImageBytes, accept: 'image/jpeg, image/png, image/gif, image/webp', accessStatus: item.rights?.access === 'public-feed' ? 'public-feed' : 'public-page', licenseStatus: item.rights?.licenseStatus || 'unknown' });
+    const imageUrl = item.imageUrl || item.image?.url;
+    if (['product', 'ui'].includes(item.category) && imageUrl) descriptors.push({ kind: 'image', url: imageUrl, maxBytes: config.network.maxImageBytes, accept: 'image/jpeg, image/png, image/gif, image/webp', accessStatus: item.rights?.access === 'public-feed' ? 'public-feed' : 'public-page', licenseStatus: item.rights?.licenseStatus || 'unknown' });
     for (const descriptor of descriptors) {
       try {
         const meta = await fetchAndCache(config, item, descriptor, ctx);

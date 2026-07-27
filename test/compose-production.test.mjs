@@ -73,6 +73,7 @@ test('Compose passes all delivery configuration only to the scheduler', () => {
 });
 
 test('GitHub Actions passes document and webhook delivery settings', () => {
+  assert.match(workflow, /^\s+- cron: "50 15 \* \* \*"$/m);
   for (const name of ['DESIGNSIGNAL_WEBHOOK_URL', 'FEISHU_WEBHOOK_URL', 'WECOM_WEBHOOK_URL', 'FEISHU_APP_ID', 'FEISHU_APP_SECRET', 'FEISHU_DOC_FOLDER_TOKEN', 'FEISHU_TENANT_BASE_URL']) assert.match(workflow, new RegExp(`^          ${name}:`, 'm'));
   assert.match(workflow, /FEISHU_TENANT_BASE_URL:[^\n]*https:\/\/feishu\.cn/);
 });

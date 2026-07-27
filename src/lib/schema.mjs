@@ -137,6 +137,32 @@ function validateInstitutionProvenance(provenance) {
   }
 }
 
+function validateLiveImageProvenance(item) {
+  if (!['product', 'ui'].includes(item.category)) return;
+  if (
+    !item.image ||
+    !cacheRef(item.image.localCacheRef) ||
+    !/^[a-f0-9]{64}$/.test(item.image.hash || '')
+  )
+    throw new Error(`live item ${item.id} requires a cached image`);
+  integer(item.image.bytes, `item ${item.id} image.bytes`, { min: 1 });
+  text(item.image.mime, `item ${item.id} image.mime`, 100);
+  if (!item.image.mime.startsWith('image/')) throw new Error(`live item ${item.id} image MIME must be image/*`);
+  text(item.image.licenseStatus, `item ${item.id} image.licenseStatus`, 500);
+  if (
+    !Array.isArray(item.assets) ||
+    !item.assets.some(
+      asset =>
+        asset.kind === 'image' &&
+        asset.hash === item.image.hash &&
+        asset.localCacheRef === item.image.localCacheRef &&
+        asset.bytes === item.image.bytes &&
+        asset.mime === item.image.mime
+    )
+  )
+    throw new Error(`live item ${item.id} image must match a cached asset`);
+}
+
 export function validateItem(item) {
   text(item.id, 'id', 300);
   if (!categories.has(item.category)) throw new Error(`invalid category for ${item.id}`);
@@ -232,6 +258,7 @@ export function validateReport(report) {
   }
   if (new Set(report.items.map(item => item.id)).size !== report.items.length) throw new Error('report item IDs must be unique');
   if (report.items.some(item => !/^[A-Za-z0-9][A-Za-z0-9._:-]{0,299}$/.test(item.id))) throw new Error('schema v4 report item IDs must be safe identifiers');
+  if (report.schemaVersion === 4 && report.fixture !== true) report.items.forEach(validateLiveImageProvenance);
   const counts = report.items.reduce((all, item) => ({ ...all, [item.category]: (all[item.category] || 0) + 1 }), {});
   if (counts.paper !== 2 || counts.product !== 1 || counts.ui !== 1 || counts.frontier !== 2) throw new Error('quota must be 2 paper, 1 product, 1 UI, 2 frontier');
   if (new Set(report.items.map(item => item.source.id)).size < 4) throw new Error('report requires at least four distinct sources');

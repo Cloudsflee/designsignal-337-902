@@ -25,6 +25,45 @@ export async function collect(config, { dryRun = false, ctx = {} } = {}) {
 }
 
 const fixtureHealth = () => [{ sourceId: 'offline-fixture', status: 'ok', count: fixtureCandidates.length, durationMs: 0 }];
+const requiresCachedImage = item => ['product', 'ui'].includes(item.category);
+const hasCachedImage = (byItem, item) =>
+  (byItem.get(item.id) || []).some(
+    asset => asset.kind === 'image' && asset.localCacheRef && /^[a-f0-9]{64}$/.test(asset.hash || '')
+  );
+
+export async function selectDailyWithRequiredAssets(config, candidates, { date, history = [], ctx = {} } = {}) {
+  let pool = candidates;
+  const requiredAssetRejected = [];
+  const combinedAssetAudit = [];
+  for (;;) {
+    let selection;
+    try {
+      selection = selectDaily(pool, {
+        date,
+        history,
+        priorityInstitutionPaper: config.selection.priorityInstitutionPaper
+      });
+    } catch (error) {
+      if (!requiredAssetRejected.length) throw error;
+      const wrapped = new Error(`insufficient validated image assets: ${error.message}`);
+      wrapped.audit = { assets: combinedAssetAudit, rejected: requiredAssetRejected };
+      throw wrapped;
+    }
+    const persisted = await persistSelectedAssets(config, selection.selected, ctx);
+    combinedAssetAudit.push(...persisted.audit);
+    const failed = selection.selected.filter(item => requiresCachedImage(item) && !hasCachedImage(persisted.byItem, item));
+    if (!failed.length) {
+      const rejected = [...selection.rejected, ...requiredAssetRejected].sort(
+        (a, b) => a.id.localeCompare(b.id) || a.sourceId.localeCompare(b.sourceId) || a.reason.localeCompare(b.reason)
+      );
+      return { ...selection, rejected, persisted: { ...persisted, audit: combinedAssetAudit } };
+    }
+    for (const item of failed)
+      requiredAssetRejected.push({ id: item.id, sourceId: item.source.id, reason: 'required-asset-failed', kind: 'image' });
+    const failedIds = new Set(failed.map(item => item.id));
+    pool = pool.filter(item => !failedIds.has(item.id));
+  }
+}
 
 function assertEvidenceBundle(bundle) {
   if (!Array.isArray(bundle?.candidates) || !Array.isArray(bundle.health) || !Array.isArray(bundle.history) || !bundle.examEvidence) throw new Error('evidence bundle is incomplete');
@@ -37,7 +76,16 @@ function assertConstraintResult(result) {
 }
 
 function assertSelectionDecision(result) {
-  if (!Array.isArray(result?.selected) || result.selected.length !== 6 || !Array.isArray(result.assetAudit) || !result.cachedAssets || typeof result.cachedAssets !== 'object') throw new Error('selection decision is incomplete');
+  if (
+    !Array.isArray(result?.selected) ||
+    result.selected.length !== 6 ||
+    !Array.isArray(result.rejected) ||
+    !result.policy ||
+    !Array.isArray(result.assetAudit) ||
+    !result.cachedAssets ||
+    typeof result.cachedAssets !== 'object'
+  )
+    throw new Error('selection decision is incomplete');
   return result;
 }
 
@@ -75,19 +123,37 @@ async function executePipeline(config, { fixture, dryRun, date, ctx }) {
 
   await session.execute('constraints', async ({ inputs }) => {
     const source = assertEvidenceBundle(inputs.evidence);
-    return assertConstraintResult(selectDaily(source.candidates, {
+    return {
+      ...assertConstraintResult(selectDaily(source.candidates, {
       date,
       history: source.history,
       priorityInstitutionPaper: config.selection.priorityInstitutionPaper
-    }));
+      })),
+      candidates: source.candidates,
+      history: source.history
+    };
   });
 
   await session.execute('decision', async ({ inputs }) => {
-    const selected = assertConstraintResult(inputs.constraints).selected;
-    if (!persistent) return assertSelectionDecision({ selected, cachedAssets: {}, assetAudit: [] });
-    const persisted = await persistSelectedAssets(config, selected, ctx);
+    const constraints = assertConstraintResult(inputs.constraints);
+    if (!persistent)
+      return assertSelectionDecision({
+        selected: constraints.selected,
+        rejected: constraints.rejected,
+        policy: constraints.policy,
+        cachedAssets: {},
+        assetAudit: []
+      });
+    const selection = await selectDailyWithRequiredAssets(config, constraints.candidates, {
+        date,
+        history: constraints.history,
+        ctx
+      }),
+      persisted = selection.persisted;
     return assertSelectionDecision({
-      selected,
+      selected: selection.selected,
+      rejected: selection.rejected,
+      policy: selection.policy,
       cachedAssets: Object.fromEntries([...persisted.byItem.entries()]),
       assetAudit: persisted.audit
     });
@@ -103,9 +169,8 @@ async function executePipeline(config, { fixture, dryRun, date, ctx }) {
 
   const report = await session.execute('acceptance', async ({ inputs }) => {
     const source = assertEvidenceBundle(inputs.evidence);
-    const selected = assertConstraintResult(inputs.constraints);
-    const analyzed = assertEnrichedItems(inputs.execution);
     const selectedDecision = assertSelectionDecision(inputs.decision);
+    const analyzed = assertEnrichedItems(inputs.execution);
     const generated = fixture ? null : await synthesizeDaily(analyzed.items, config, ctx, {
       examEvidence: source.examEvidence,
       studyProfile: source.studyProfile,
@@ -114,9 +179,9 @@ async function executePipeline(config, { fixture, dryRun, date, ctx }) {
     return validateReport(await buildReport({
       date,
       items: analyzed.items,
-      rejected: selected.rejected,
+      rejected: selectedDecision.rejected,
       health: source.health,
-      selectionPolicy: selected.policy,
+      selectionPolicy: selectedDecision.policy,
       assetAudit: selectedDecision.assetAudit,
       fixture,
       generated,
