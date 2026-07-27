@@ -25,6 +25,9 @@ jobs:
           OPENAI_BASE_URL: ${{ vars.OPENAI_BASE_URL || 'https://api.openai.com/v1' }}
           OPENAI_MODEL: ${{ vars.OPENAI_MODEL }}
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          DESIGNSIGNAL_WEBHOOK_URL: ${{ secrets.DESIGNSIGNAL_WEBHOOK_URL }}
+          FEISHU_WEBHOOK_URL: ${{ secrets.FEISHU_WEBHOOK_URL }}
+          WECOM_WEBHOOK_URL: ${{ secrets.WECOM_WEBHOOK_URL }}
           FEISHU_APP_ID: ${{ vars.FEISHU_APP_ID }}
           FEISHU_APP_SECRET: ${{ secrets.FEISHU_APP_SECRET }}
           FEISHU_DOC_FOLDER_TOKEN: ${{ secrets.FEISHU_DOC_FOLDER_TOKEN }}

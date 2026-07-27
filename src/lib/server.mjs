@@ -3,10 +3,11 @@ import { lstat, readFile, readdir } from 'node:fs/promises';
 import path from 'node:path';
 import { latestReport } from './storage.mjs';
 import { renderHtml } from './render.mjs';
-import { json, sha256 } from './util.mjs';
+import { isIsoDate, json, sha256 } from './util.mjs';
 import { loadExamEvidence } from './evidence.mjs';
 import { appendFeedback, validateFeedback } from './study.mjs';
 import { exposeDeliveryJob } from './push.mjs';
+import { latestExecutionRun, readExecutionRun } from './runtime.mjs';
 
 export const APP_JS = `(() => {
   const filterButtons = [...document.querySelectorAll('[data-filter]')];
@@ -153,9 +154,27 @@ export async function handleDashboardRequest(config, req, res) {
         } catch { return json(res, 404, { error: 'asset not found' }); }
       }
       if (req.method === 'GET' && url.pathname === '/api/report') { const report = await latestReport(config.dataDir); return json(res, report ? 200 : 404, report || { error: 'no report' }); }
+      if (req.method === 'GET' && url.pathname === '/api/run') { const run = await latestExecutionRun(config.dataDir); return json(res, run ? 200 : 404, run || { error: 'no execution run' }); }
+      if (req.method === 'GET' && /^\/api\/runs\/\d{4}-\d{2}-\d{2}$/.test(url.pathname)) {
+        const date = url.pathname.slice('/api/runs/'.length);
+        if (!isIsoDate(date)) return json(res, 400, { error: 'invalid execution run date' });
+        const run = await readExecutionRun(config.dataDir, date);
+        return json(res, run ? 200 : 404, run || { error: 'execution run not found' });
+      }
       if (req.method === 'GET' && url.pathname === '/api/evidence') return json(res, 200, await loadExamEvidence());
       if (req.method === 'GET' && url.pathname === '/api/source-health') { const report = await latestReport(config.dataDir); return json(res, report ? 200 : 404, report?.audit.sourceHealth || { error: 'no report' }); }
-      if (req.method === 'GET' && url.pathname === '/api/outbox') { let files = []; try { files = await readdir(path.join(config.dataDir, 'outbox')); } catch {} const jobs = await Promise.all(files.filter(x => x.endsWith('.json')).map(x => readFile(path.join(config.dataDir, 'outbox', x), 'utf8').then(JSON.parse))); return json(res, 200, jobs.map(({ payload, ...job }) => exposeDeliveryJob(job, config))); }
+      if (req.method === 'GET' && url.pathname === '/api/outbox') {
+        let files = []; try { files = await readdir(path.join(config.dataDir, 'outbox')); } catch {}
+        const jobs = await Promise.all(files.filter(x => x.endsWith('.json')).map(async name => {
+          try {
+            const job = JSON.parse(await readFile(path.join(config.dataDir, 'outbox', name), 'utf8'));
+            return exposeDeliveryJob(job, config);
+          } catch {
+            return { id: name.slice(0, -5), state: 'invalid', reason: 'invalid-job-file' };
+          }
+        }));
+        return json(res, 200, jobs);
+      }
       if (req.method === 'POST' && url.pathname === '/api/feedback') {
         const raw = await body(req, 8192);
         let input;
@@ -168,7 +187,7 @@ export async function handleDashboardRequest(config, req, res) {
         catch { throw new Error('feedback storage failed'); }
         res.writeHead(303, { location: '/' }); return res.end();
       }
-      if (req.method === 'GET' && url.pathname === '/') { const report = await latestReport(config.dataDir); if (!report) { res.writeHead(503, { 'content-type': 'text/plain; charset=utf-8' }); return res.end('No report yet. Run daily first.'); } const html = renderHtml(report); res.writeHead(200, { 'content-type': 'text/html; charset=utf-8', 'content-length': Buffer.byteLength(html) }); return res.end(html); }
+      if (req.method === 'GET' && url.pathname === '/') { const report = await latestReport(config.dataDir); if (!report) { res.writeHead(503, { 'content-type': 'text/plain; charset=utf-8' }); return res.end('No report yet. Run daily first.'); } const run = await readExecutionRun(config.dataDir, report.date); const html = renderHtml(report, { run, showPipeline: Boolean(run) }); res.writeHead(200, { 'content-type': 'text/html; charset=utf-8', 'content-length': Buffer.byteLength(html) }); return res.end(html); }
       return json(res, 404, { error: 'not found' });
     } catch (error) { return json(res, /too large/.test(error.message) ? 413 : 500, { error: error.message }); }
 }

@@ -22,6 +22,11 @@ export const isoDate = (date = new Date(), timeZone = 'Asia/Shanghai') => {
   const get = type => parts.find(p => p.type === type)?.value;
   return `${get('year')}-${get('month')}-${get('day')}`;
 };
+export const isIsoDate = value => {
+  if (typeof value !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(value)) return false;
+  const parsed = new Date(`${value}T00:00:00.000Z`);
+  return Number.isFinite(parsed.getTime()) && parsed.toISOString().slice(0, 10) === value;
+};
 export const escapeHtml = value => String(value ?? '').replace(/[&<>'"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', "'": '&#39;', '"': '&quot;' })[c]);
 export const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
 export const parseArgs = args => {
@@ -185,7 +190,7 @@ export async function withLock(lockFile, fn) {
   try { handle = await open(lockFile, 'wx', 0o600); }
   catch (error) { if (error.code === 'EEXIST') throw new Error(`date already locked: ${path.basename(lockFile, '.lock')}`); throw error; }
   try { return await fn(); }
-  finally { await handle.close(); await rm(lockFile, { force: true }); }
+  finally { try { await handle.close(); } finally { await rm(lockFile, { force: true }); } }
 }
 export const redact = value => {
   const sensitive = /(api[-_]?key|app[-_]?id|authorization|endpoint|folder|token|secret|webhook|mailto)/i;

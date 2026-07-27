@@ -4,11 +4,45 @@
 
 Run `node src/cli.mjs doctor`, provide model credentials through the process environment or a protected explicit config, then keep `node src/cli.mjs schedule` under systemd, launchd, Docker Compose, or another restart supervisor. Run `node src/cli.mjs serve` separately. Back up `data/`; it contains reports, the append-only manifest, feedback, cache metadata, and the durable outbox.
 
-Set `DESIGNSIGNAL_MODEL_CONCURRENCY` to an integer from 1 through 4 (default 2), `DESIGNSIGNAL_MODEL_TIMEOUT_MS` to an integer from 10000 through 600000 (default 180000), and `DESIGNSIGNAL_MODEL_MAX_OUTPUT_TOKENS` to an integer from 256 through 32768 (default 6000). The model timeout is independent of public-source network timeouts. Each live run analyzes six items with bounded concurrency while preserving selection order, then starts one separate synthesis call only after all six succeed. Timeout and network failures, HTTP 429, and HTTP 5xx are attempted at most three times with capped exponential backoff; numeric `Retry-After` values are honored up to 30 seconds, while other HTTP 4xx responses stop immediately. The synthesis call receives clipped item analysis, the allowed official exam taxonomy and links, a whitelisted optional study profile, and only the recent bounded feedback window. Malformed output or invented IDs, topics, or citations is retried three times and then fails the run with redacted errors. Model requests disable provider storage with `store: false`.
+Set `DESIGNSIGNAL_MODEL_CONCURRENCY` to an integer from 1 through 4 (default 2), `DESIGNSIGNAL_MODEL_TIMEOUT_MS` to an integer from 10000 through 600000 (default 180000), and `DESIGNSIGNAL_MODEL_MAX_OUTPUT_TOKENS` to an integer from 256 through 32768 (default 6000). The model timeout is independent of public-source network timeouts. Each live run analyzes six items with bounded concurrency while preserving selection order, then starts one separate synthesis call only after all six succeed. Timeout and network failures, HTTP 429, HTTP 5xx, and malformed or schema-invalid structured output are attempted at most three times with 1s/2s capped exponential backoff; numeric `Retry-After` values are honored up to 30 seconds, while other HTTP 4xx responses stop immediately. Once one item fails, in-flight calls are allowed to settle but no new item call is scheduled. The synthesis call receives clipped item analysis, the allowed official exam taxonomy and links, a whitelisted optional study profile, and only the recent bounded feedback window. Exhausted failures expose only redacted errors and the public item ID. Model requests disable provider storage with `store: false`. A provider base ending in `/responses` is not appended twice, while config loading rejects model URLs with credentials, query strings, or fragments.
 
 For a native CLI process, `DESIGNSIGNAL_STUDY_PROFILE_FILE` may point to a protected JSON file containing the profile schema described under Docker below. Keep the profile outside version control. Feedback is appended with mode `0600` to `data/feedback.ndjson`; invalid dates, score ranges, minutes, oversized notes, and excessive weak-point lists are rejected with HTTP 400.
 
-Missing Feishu configuration is normal: the report remains published and its document delivery stays pending with `missing-feishu-document-config`. Add all three required values to the environment and run `node src/cli.mjs push retry`. Definite API rejections and tenant-token failures use capped exponential backoff. In-flight create/write jobs and ambiguous side-effecting requests stop as `reconciliation-required` because creating a second document or duplicating root blocks would be unsafe.
+Missing delivery configuration is normal: the report remains published. The Feishu document job stays pending with `missing-feishu-document-config`, while each webhook job stays pending without being rewritten. Add the required values and run `node src/cli.mjs push retry`. Queue creation and every retry share `data/locks/outbox.lock`, so scheduled daily work and manual retry cannot mutate the outbox concurrently. Definite document API rejections and tenant-token failures use capped exponential backoff. In-flight create/write jobs and ambiguous side-effecting requests stop as `reconciliation-required` because creating a second document or duplicating root blocks would be unsafe. `/api/outbox` returns a fixed safe metadata projection and represents malformed JSON files as `invalid`; it never returns payloads, configured endpoints, or credentials.
+
+## Execution DAG and recovery
+
+Every live date persists `data/runs/YYYY-MM-DD/run.json` using `aiws.task_execution_context.v2`. Its six ordered stages are `evidence`, `constraints`, `decision`, `execution`, `acceptance`, and `integration`. Each stage records its contract v2 input slots, exact input snapshot hash, attempts, state, blocking dependencies, confirmed output binding, and direct `derived_from` versions. Output envelopes are content-addressed and immutable under `data/runs/YYYY-MM-DD/assets/av_<sha256>.json`; the public API and dashboard return only bindings and hashes, never asset payloads or captured private study context.
+
+Inspect the latest run or a selected date without touching state:
+
+```sh
+node src/cli.mjs run show
+node src/cli.mjs run show --date 2026-07-22
+```
+
+Verify a selected run and all currently bound immutable asset envelopes without touching state:
+
+```sh
+node src/cli.mjs run verify --date 2026-07-22 --json
+```
+
+`run verify` requires an explicit date. It validates the current run metadata and every content-addressed output binding, and it fails rather than fabricating stage records for legacy reports. `ok: true` means the recorded metadata and bound assets passed integrity checks; inspect `state`, `completed_stage_count`, and per-stage `state` to distinguish a complete run from an internally consistent incomplete run. Failures exit non-zero with a redacted stderr diagnostic, no stdout success body, and no repair or mutation.
+
+A process restart verifies every completed output and resumes from the first unfinished stage. A stage left `running` is retried in place and increments its attempt count. If an immutable asset is missing, altered, or rebound, or if current run parameters no longer match the root snapshot, execution stops with `task_context_not_ready`. It does not overwrite an upstream version or silently regenerate dependent outputs. If the report was atomically published before the integration stage record was finalized, a normal `daily --date ...` recovery reconciles the manifest and finishes only the integration receipt.
+
+For an incomplete run whose inputs intentionally changed, archive the old metadata and explicitly start a new revision:
+
+```sh
+node src/cli.mjs run restart --date 2026-07-22 --reason "approved source policy update"
+node src/cli.mjs daily --date 2026-07-22
+```
+
+The archived run remains under `data/runs/YYYY-MM-DD/revisions/`, and content-addressed assets remain available for audit. `run restart` refuses completed runs and any date whose report has already been published. Every active published report must have a verifiable run record; use the reviewed data migration command for historical data instead of fabricating records by hand.
+
+## Webhook delivery
+
+Set any combination of `DESIGNSIGNAL_WEBHOOK_URL`, `FEISHU_WEBHOOK_URL`, and `WECOM_WEBHOOK_URL` for generic JSON, Feishu text, and WeCom text delivery. Endpoints must be credential-free HTTPS URLs; query-string webhook keys are supported, remain in process memory, and are never written to an outbox file or report. Every send validates all DNS answers, blocks private and reserved addresses, and pins the validated address set into the TLS request to prevent rebinding between validation and connection. A job is posted once per due retry cycle with `Idempotency-Key: designsignal-<job-id>`. HTTP 408, 425, 429, and 5xx failures remain pending with capped exponential backoff; other 4xx responses also remain visible but are not replayed inside the same process attempt.
 
 ## Feishu document delivery
 
@@ -28,13 +62,13 @@ Authentication, Docx creation, and block-write requests always use `https://open
 
 The sender obtains a tenant token in memory, persists `creating` before the create request, and atomically stores the returned document ID and revision as `created` before attempting any block write. It appends root children in order using the official 1..50 child limit. Before every chunk it persists `writing`, the insertion cursor, revision, size, and a deterministic non-secret client token, then sends that same revision and token. A successful response atomically advances the confirmed cursor and revision. Confirmed chunks resume at the next cursor; an interrupted or ambiguous in-flight chunk stops for reconciliation, preventing duplication or reordering. Job files contain no request body, credential, tenant access token, folder token, or API origin. They retain report identity, safe document/progress metadata, and the SHA-256 render fingerprint. Delivered jobs returned by the CLI and `/api/outbox` include the safe tenant document URL.
 
-A `created` job can resume at its stored confirmed cursor without recreating the document or resending earlier chunks. Tenant-token timeout and HTTP 5xx failures back off because token acquisition has no document side effect. Create/write timeout, HTTP 5xx, malformed success, and interrupted in-flight states require reconciliation. Do not manually change `creating`, `writing`, or `reconciliation-required` to pending. First inspect the Feishu folder/document and reconcile whether the create or write took effect. Preserve the job as incident evidence; after confirming the exact external state, use a separately reviewed manual recovery procedure. Automatic recovery only creates the missing v1 `feishu-document` job identity and never modifies legacy outbox jobs.
+A `created` job can resume at its stored confirmed cursor without recreating the document or resending earlier chunks. Tenant-token timeout and HTTP 5xx failures back off because token acquisition has no document side effect. Create/write timeout, HTTP 5xx, malformed success, and interrupted in-flight states require reconciliation. Do not manually change `creating`, `writing`, or `reconciliation-required` to pending. First inspect the Feishu folder/document and reconcile whether the create or write took effect. Preserve the job as incident evidence; after confirming the exact external state, use a separately reviewed manual recovery procedure. Automatic report recovery creates only missing delivery identities. Every webhook and document job uses `schemaVersion: 1`; malformed, unknown, or unversioned jobs are rejected.
 
-The local scheduler computes the next 23:50 in `Asia/Shanghai` with `Intl`, so host timezone does not matter. It catches failed daily runs and schedules the next day. Use an external service supervisor for process crashes or host restarts.
+The local scheduler validates its IANA timezone at configuration load and computes the next 23:50 in `Asia/Shanghai` with `Intl`, so host timezone does not matter. A live run holds `data/locks/YYYY-MM-DD.run.lock` from pre-collection recovery through collection, model calls, asset persistence, report publication, delivery queueing, and retry. Fixture and dry-run commands remain lock-free and side-effect free. The scheduler redacts caught error messages, records the failed day, and schedules the next run. Use an external service supervisor for process crashes or host restarts.
 
 ## GitHub Actions
 
-The workflow uses `50 15 * * *` because 15:50 UTC is 23:50 Shanghai. GitHub explicitly does not guarantee exact cron start times; congestion can delay a hosted run. Manual dispatch is available. Per-date concurrency prevents overlapping runs, and report/outbox artifacts are retained for 30 days. Configure `OPENAI_MODEL`, `OPENAI_API_KEY`, optional `OPENAI_BASE_URL`, the three required Feishu app/folder values, and optional `FEISHU_TENANT_BASE_URL` as Actions secrets/variables when that runner performs delivery.
+The workflow uses `50 15 * * *` because 15:50 UTC is 23:50 Shanghai. GitHub explicitly does not guarantee exact cron start times; congestion can delay a hosted run. Manual dispatch is available. Per-date concurrency prevents overlapping runs, and report/outbox artifacts are retained for 30 days. Configure `OPENAI_MODEL`, `OPENAI_API_KEY`, optional `OPENAI_BASE_URL`, the required Feishu app/folder values, optional `FEISHU_TENANT_BASE_URL`, and any webhook endpoints as Actions secrets/variables when that runner performs delivery.
 
 ## Docker
 
@@ -193,7 +227,7 @@ docker compose run --rm --no-deps --volume "${BackupDir}:/backup:ro" dashboard t
 docker compose up --detach
 ```
 
-Supply `OPENALEX_*`, optional RSSHub feeds, and Feishu document values through the process environment or a local untracked `.env`. Do not bake credentials into the image or commit `.env`. Base Compose passes Feishu values only to the scheduler; the dashboard never receives them.
+Supply `OPENALEX_*`, optional RSSHub feeds, webhook endpoints, and Feishu document values through the process environment or a local untracked `.env`. Do not bake credentials into the image or commit `.env`. Base Compose passes delivery values only to the scheduler; the dashboard never receives them.
 
 ## Windows Task Scheduler
 
@@ -208,4 +242,14 @@ Register-ScheduledTask -TaskName "DesignSignal Daily" -Action $action -Trigger $
 
 ## Recovery
 
-An existing dated report makes a rerun idempotently return `exists`. Recovery accepts immutable schema v2 reports under their legacy audit contract and schema v3 reports with the complete priority-institution audit; it never upgrades or rewrites them, and manifest reconciliation uses the exact stored JSON bytes. New writes are schema v4. Recovery queues only a missing v1 Feishu document identity and leaves every legacy outbox file byte-for-byte untouched. A stale lock indicates an interrupted process; confirm no daily process is running, preserve the lock for incident evidence, then remove only that date’s lock and rerun. If a report directory exists without a manifest entry, inspect its three files and hashes before manually appending a recovery record. Never overwrite an existing report silently.
+An existing dated report makes a rerun idempotently return `exists`. Active reads accept only schema v4 reports, manifest entries with exact item IDs and source URLs, versioned delivery jobs, and verified execution assets. Latest-report reads reject a noncanonical path, invalid calendar date, hash mismatch, or report-date mismatch. A stale `.run.lock`, report lock, or `outbox.lock` indicates an interrupted process; confirm that no corresponding daily or push process is running, preserve the lock for incident evidence, then remove only that lock and rerun. If a report directory exists without a manifest entry, inspect its three files and hashes before manually appending a recovery record. Never overwrite an existing report silently.
+
+Before upgrading historical data, stop the dashboard and scheduler, take a byte-for-byte backup of the data volume, and run a read-only plan:
+
+```sh
+node src/cli.mjs data migrate --dry-run
+node src/cli.mjs data migrate --apply
+node src/cli.mjs data migrate --dry-run
+```
+
+The apply step upgrades v2/v3 reports to v4, regenerates matching Markdown/HTML artifacts, completes manifest URL lists, versions webhook jobs, recreates missing deterministic delivery identities, and reconstructs content-addressed run lineage from the verified published report. Each reconstructed run is explicitly marked `historical_migration`; unavailable transient candidate state is recorded as a migration limitation. The final dry run must report no pending changes, including no `rewritten_report_artifacts` or incomplete runs.

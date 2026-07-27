@@ -63,7 +63,7 @@ export function buildBriefing(items) {
 
 export function briefingView(report) {
   const source = structuredClone(report);
-  const briefing = source.schemaVersion === 4 ? source.briefing : buildBriefing(source.items);
+  const briefing = source.briefing;
   const itemsById = new Map(source.items.map(item => [item.id, item]));
   return {
     schemaVersion: source.schemaVersion,

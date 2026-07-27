@@ -1,9 +1,10 @@
 import path from 'node:path';
 import { mkdir, readdir, readFile } from 'node:fs/promises';
-import { atomicWrite, sha256 } from './util.mjs';
-import { assertSafeUrl, readBoundedBody } from './network.mjs';
+import { atomicWrite, isIsoDate, sha256, withLock } from './util.mjs';
+import { HttpStatusError, safeFetch } from './network.mjs';
 import { readReportByDate } from './storage.mjs';
 import { renderFeishuBlocks } from './render.mjs';
+import { queueWebhookDeliveries, retryWebhookOutbox } from './webhook.mjs';
 
 const CHANNEL = 'feishu-document';
 const JOB_VERSION = 1;
@@ -14,6 +15,17 @@ const DEFINITE_FAILURE = 'definite-failure';
 const RECONCILIATION = 'reconciliation-required';
 const inFlightStates = new Set(['creating', 'writing']);
 const states = new Set(['pending', 'creating', 'created', 'writing', 'delivered', RECONCILIATION]);
+const DOCUMENT_JOB_FIELDS = new Set([
+  'schemaVersion', 'id', 'channel', 'reportDate', 'state', 'reason', 'attempts',
+  'nextAttemptAt', 'createdAt', 'renderFingerprint', 'totalBlocks', 'nextBlockIndex',
+  'documentId', 'revisionId', 'chunkCursor', 'chunkSize', 'chunkRevisionId', 'clientToken',
+  'creatingAt', 'createdDocumentAt', 'writingAt', 'confirmedChunkAt', 'deliveredAt',
+  'reconciliationRequiredAt'
+]);
+const REQUIRED_DOCUMENT_JOB_FIELDS = [
+  'schemaVersion', 'id', 'channel', 'reportDate', 'state', 'reason', 'attempts',
+  'nextAttemptAt', 'createdAt', 'renderFingerprint', 'totalBlocks', 'nextBlockIndex'
+];
 
 const configured = config => Boolean(config.feishuDocument?.appId && config.feishuDocument?.appSecret && config.feishuDocument?.folderToken);
 const jobId = report => sha256(`${report.date}:${CHANNEL}:v${JOB_VERSION}`).slice(0, 24);
@@ -22,14 +34,20 @@ const jobPath = (dataDir, id) => path.join(dataDir, 'outbox', `${id}.json`);
 const storeJob = (file, job, options) => atomicWrite(file, `${JSON.stringify(job, null, 2)}\n`, options);
 const nowIso = ctx => new Date((ctx.now?.() ?? Date.now())).toISOString();
 
-function assertStoredJob(job, filename) {
+export function assertStoredDocumentJob(job, filename) {
   if (job.schemaVersion !== JOB_VERSION || job.channel !== CHANNEL || !/^[a-f0-9]{24}$/.test(job.id || '') || filename !== `${job.id}.json`) throw new Error('invalid Feishu document job identity');
-  if (!/^\d{4}-\d{2}-\d{2}$/.test(job.reportDate || '') || job.id !== sha256(`${job.reportDate}:${CHANNEL}:v${JOB_VERSION}`).slice(0, 24)) throw new Error('invalid Feishu document report identity');
-  if (!/^[a-f0-9]{64}$/.test(job.renderFingerprint || '') || !states.has(job.state) || !Number.isSafeInteger(job.attempts) || job.attempts < 0 || !Number.isFinite(Date.parse(job.nextAttemptAt))) throw new Error('invalid Feishu document job state');
+  if (Object.keys(job).some(key => !DOCUMENT_JOB_FIELDS.has(key)) || REQUIRED_DOCUMENT_JOB_FIELDS.some(key => !(key in job))) throw new Error('invalid Feishu document job fields');
+  if (!isIsoDate(job.reportDate) || job.id !== sha256(`${job.reportDate}:${CHANNEL}:v${JOB_VERSION}`).slice(0, 24)) throw new Error('invalid Feishu document report identity');
+  if (!/^[a-f0-9]{64}$/.test(job.renderFingerprint || '') || !states.has(job.state) || !Number.isSafeInteger(job.attempts) || job.attempts < 0 ||
+      typeof job.reason !== 'string' || job.reason.length > 240 || !Number.isFinite(Date.parse(job.createdAt)) || !Number.isFinite(Date.parse(job.nextAttemptAt))) throw new Error('invalid Feishu document job state');
   if (!Number.isSafeInteger(job.totalBlocks) || job.totalBlocks < 1 || !Number.isSafeInteger(job.nextBlockIndex) || job.nextBlockIndex < 0 || job.nextBlockIndex > job.totalBlocks) throw new Error('invalid Feishu document job progress');
+  for (const field of ['creatingAt', 'createdDocumentAt', 'writingAt', 'confirmedChunkAt', 'deliveredAt', 'reconciliationRequiredAt']) {
+    if (job[field] !== undefined && !Number.isFinite(Date.parse(job[field]))) throw new Error('invalid Feishu document job timestamp');
+  }
+  if (job.revisionId !== undefined && job.documentId === undefined) throw new Error('invalid stored Feishu document identity');
   if (job.documentId !== undefined && (!/^[A-Za-z0-9_-]{8,128}$/.test(job.documentId) || ((!Number.isSafeInteger(job.revisionId) || job.revisionId < 0) && !/^\d+$/.test(job.revisionId || '')))) throw new Error('invalid stored Feishu document identity');
   if (['created', 'writing', 'delivered'].includes(job.state) && !job.documentId) throw new Error('Feishu document state requires a document identity');
-  if (job.state === 'delivered' && job.nextBlockIndex !== job.totalBlocks) throw new Error('delivered Feishu document job has incomplete progress');
+  if (job.state === 'delivered' && (job.nextBlockIndex !== job.totalBlocks || !Number.isFinite(Date.parse(job.deliveredAt)))) throw new Error('delivered Feishu document job has incomplete progress');
   const hasChunk = ['chunkCursor', 'chunkSize', 'chunkRevisionId', 'clientToken'].some(key => job[key] !== undefined);
   if (job.state === 'writing' || hasChunk) {
     if (!job.documentId || !Number.isSafeInteger(job.chunkCursor) || job.chunkCursor !== job.nextBlockIndex || !Number.isSafeInteger(job.chunkSize) || job.chunkSize < 1 || job.chunkSize > MAX_CHILDREN || job.chunkCursor + job.chunkSize > job.totalBlocks || String(job.chunkRevisionId) !== String(job.revisionId) || !/^[a-f0-9]{32}$/.test(job.clientToken || '')) throw new Error('invalid Feishu document in-flight chunk');
@@ -46,13 +64,25 @@ function documentUrl(config, documentId) {
 const chunkToken = (job, cursor, size, revision) => sha256(`${job.id}:${job.documentId}:${cursor}:${size}:${revision}:${job.renderFingerprint}`).slice(0, 32);
 const clearChunk = job => { for (const key of ['chunkCursor', 'chunkSize', 'chunkRevisionId', 'clientToken', 'writingAt']) delete job[key]; };
 
+const SAFE_JOB_FIELDS = [
+  'schemaVersion', 'id', 'channel', 'reportDate', 'endpointConfigured', 'state', 'reason',
+  'attempts', 'nextAttemptAt', 'createdAt', 'renderFingerprint', 'totalBlocks', 'nextBlockIndex',
+  'documentId', 'revisionId', 'chunkCursor', 'chunkSize', 'chunkRevisionId', 'clientToken',
+  'creatingAt', 'createdDocumentAt', 'writingAt', 'confirmedChunkAt', 'deliveredAt', 'reconciliationRequiredAt'
+];
+
 export function exposeDeliveryJob(job, config) {
-  const exposed = structuredClone(job);
-  if (job.state === 'delivered' && job.documentId) exposed.documentUrl = documentUrl(config, job.documentId);
+  const exposed = {};
+  for (const key of SAFE_JOB_FIELDS) {
+    const value = job?.[key];
+    if (value === undefined || value === null) continue;
+    if (['string', 'number', 'boolean'].includes(typeof value)) exposed[key] = value;
+  }
+  if (job?.state === 'delivered' && /^[A-Za-z0-9_-]{8,128}$/.test(String(job.documentId || ''))) exposed.documentUrl = documentUrl(config, job.documentId);
   return exposed;
 }
 
-export async function queueDeliveries(dataDir, report, config) {
+async function queueDocumentDelivery(dataDir, report, config) {
   const dir = path.join(dataDir, 'outbox');
   await mkdir(dir, { recursive: true });
   const createdAt = new Date().toISOString();
@@ -82,7 +112,7 @@ export async function queueDeliveries(dataDir, report, config) {
       stored = JSON.parse(await readFile(file, 'utf8'));
     }
   }
-  try { assertStoredJob(stored, `${expected.id}.json`); }
+  try { assertStoredDocumentJob(stored, `${expected.id}.json`); }
   catch { throw new Error(`conflicting outbox job identity for ${expected.id}`); }
   if (stored.reportDate !== report.date || stored.renderFingerprint !== expected.renderFingerprint || stored.totalBlocks !== expected.totalBlocks) throw new Error(`conflicting outbox job identity for ${expected.id}`);
   return [exposeDeliveryJob(stored, config)];
@@ -94,22 +124,19 @@ class DeliveryFailure extends Error {
 
 async function requestJson(url, init, config, ctx, phase, { remoteSideEffect = false } = {}) {
   const policy = { ...config.network, allowHosts: [...new Set([...(config.network.allowHosts || []), new URL(API_ORIGIN).hostname])] };
-  try { await assertSafeUrl(url, policy, ctx); }
-  catch { throw new DeliveryFailure(DEFINITE_FAILURE); }
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), config.network.timeoutMs);
+  let response;
   try {
-    let response;
-    try { response = await (ctx.fetchImpl || fetch)(url, { ...init, redirect: 'error', signal: controller.signal }); }
-    catch { throw new DeliveryFailure(`${phase}-${remoteSideEffect ? 'ambiguous' : 'unavailable'}`, { ambiguous: remoteSideEffect }); }
-    if (response.status >= 500 || response.status === 408) throw new DeliveryFailure(`${phase}-${remoteSideEffect ? 'ambiguous' : 'unavailable'}`, { ambiguous: remoteSideEffect });
-    if (!response.ok) throw new DeliveryFailure(DEFINITE_FAILURE);
-    let data;
-    try { data = JSON.parse((await readBoundedBody(response, config.network.maxJsonBytes)).toString('utf8')); }
-    catch { throw new DeliveryFailure(`${phase}-${remoteSideEffect ? 'ambiguous' : 'invalid'}`, { ambiguous: remoteSideEffect }); }
-    if (data?.code !== 0) throw new DeliveryFailure(DEFINITE_FAILURE);
-    return data;
-  } finally { clearTimeout(timer); }
+    response = await safeFetch(url, policy, { ...ctx, ...init, retries: 0, maxBytes: config.network.maxJsonBytes });
+  } catch (error) {
+    if (error instanceof HttpStatusError && !error.retryable) throw new DeliveryFailure(DEFINITE_FAILURE);
+    if (/unsafe URL|allowlisted|private or unresolved/.test(error?.message || '')) throw new DeliveryFailure(DEFINITE_FAILURE);
+    throw new DeliveryFailure(`${phase}-${remoteSideEffect ? 'ambiguous' : 'unavailable'}`, { ambiguous: remoteSideEffect });
+  }
+  let data;
+  try { data = JSON.parse(response.body.toString('utf8')); }
+  catch { throw new DeliveryFailure(`${phase}-${remoteSideEffect ? 'ambiguous' : 'invalid'}`, { ambiguous: remoteSideEffect }); }
+  if (data?.code !== 0) throw new DeliveryFailure(DEFINITE_FAILURE);
+  return data;
 }
 
 const headers = token => ({ 'content-type': 'application/json; charset=utf-8', ...(token ? { authorization: `Bearer ${token}` } : {}), 'user-agent': 'DesignSignal/1.0' });
@@ -200,14 +227,14 @@ async function runJob(job, file, report, config, ctx) {
   }
 }
 
-export async function retryOutbox(dataDir, config, ctx = {}) {
+async function retryDocumentOutbox(dataDir, config, ctx = {}) {
   const dir = path.join(dataDir, 'outbox'); let files;
   try { files = await readdir(dir); } catch (error) { if (error.code === 'ENOENT') return []; throw error; }
   const results = [];
   for (const name of files.filter(x => x.endsWith('.json')).sort()) {
     const file = path.join(dir, name), job = JSON.parse(await readFile(file, 'utf8'));
     if (job.channel !== CHANNEL) continue;
-    assertStoredJob(job, name);
+    assertStoredDocumentJob(job, name);
     if (job.state === 'delivered' || job.state === RECONCILIATION) { results.push(exposeDeliveryJob(job, config)); continue; }
     if (inFlightStates.has(job.state)) {
       await runJob(job, file, null, config, ctx);
@@ -232,4 +259,24 @@ export async function retryOutbox(dataDir, config, ctx = {}) {
     results.push(exposeDeliveryJob(job, config));
   }
   return results;
+}
+
+async function queueDeliveriesUnlocked(dataDir, report, config) {
+  const document = await queueDocumentDelivery(dataDir, report, config);
+  const webhooks = await queueWebhookDeliveries(dataDir, report, config);
+  return [...document, ...webhooks];
+}
+
+export async function queueDeliveries(dataDir, report, config) {
+  return withLock(path.join(dataDir, 'locks', 'outbox.lock'), () => queueDeliveriesUnlocked(dataDir, report, config));
+}
+
+async function retryOutboxUnlocked(dataDir, config, ctx = {}) {
+  const document = await retryDocumentOutbox(dataDir, config, ctx);
+  const webhooks = await retryWebhookOutbox(dataDir, config, ctx);
+  return [...document, ...webhooks];
+}
+
+export async function retryOutbox(dataDir, config, ctx = {}) {
+  return withLock(path.join(dataDir, 'locks', 'outbox.lock'), () => retryOutboxUnlocked(dataDir, config, ctx));
 }

@@ -96,6 +96,16 @@ test('Codex TOML provider loads with environment precedence and redaction-safe e
   const urlPassword = ['fixture', 'url', 'value'].join('-');
   const credentialedBaseUrl = ['https://name', urlPassword, '@models.example/v1'].join(':');
   await assert.rejects(() => loadConfig({ env: { OPENAI_BASE_URL: credentialedBaseUrl } }), error => error.message === 'invalid model base URL' && !error.message.includes(urlPassword));
+  const webhookConfig = await loadConfig({ env: {
+    DESIGNSIGNAL_WEBHOOK_URL: 'https://hooks.example/generic?key=one',
+    FEISHU_WEBHOOK_URL: 'https://hooks.example/feishu?key=two',
+    WECOM_WEBHOOK_URL: 'https://hooks.example/wecom?key=three'
+  } });
+  assert.deepEqual(Object.keys(webhookConfig.push), ['generic', 'feishu', 'wecom']);
+  const webhookMarker = ['private', 'hook', 'fixture'].join('-');
+  for (const invalid of [`http://hooks.example/${webhookMarker}`, `https://name:${webhookMarker}@hooks.example/x`, `https://hooks.example/x#${webhookMarker}`]) {
+    await assert.rejects(() => loadConfig({ env: { DESIGNSIGNAL_WEBHOOK_URL: invalid } }), error => error.message === 'invalid webhook URL' && !error.message.includes(webhookMarker));
+  }
   assert.throws(() => parseCodexToml('model = "one"\nmodel = "two"'), /duplicate/);
   const malformedCredential = ['malformed', 'credential', 'fixture'].join('-');
   for (const malformed of [
@@ -129,6 +139,13 @@ test('default sources use exact combined institution IDs and corrected public fe
   assert.equal(institutions.length, 1);
   assert.equal(new URL(institutions[0].url).searchParams.get('filter').split('institutions.id:')[1], 'I99065089|I76130692|I116953780');
   assert.equal(config.sources.find(x => x.id === 'tsinghua-design-news').url, 'https://www.ad.tsinghua.edu.cn/xw/xwdt.htm');
+  assert.equal(config.sources.find(x => x.id === 'stanford-hci-news').url, 'https://hai.stanford.edu/news');
+  assert.equal(config.sources.find(x => x.id === 'stanford-hci-news').listingFormat, 'next-flight');
+  assert.equal(config.sources.find(x => x.id === 'stanford-hci-news').articlePathPrefix, '/news/');
+  assert.equal(config.sources.find(x => x.id === 'cmu-hcii-news').detailDateMax, 8);
+  assert.equal(config.sources.find(x => x.id === 'cmu-hcii-news').listingContainerClass, 'newsfront-cards');
+  assert.ok(config.network.allowHosts.includes('hai.stanford.edu'));
+  assert.ok(!config.network.allowHosts.includes('hci.stanford.edu'));
   assert.equal(config.sources.find(x => x.id === 'core77').url, 'https://www.core77.com/rss.xml');
   assert.equal(config.sources.find(x => x.id === 'sspai').url, 'https://sspai.com/feed');
   assert.ok(config.sources.filter(x => x.adapter === 'listing').every(x => x.optional));
@@ -145,6 +162,12 @@ test('selection uses candidate language policy and rejects dates over 24 hours i
   future.id = 'future-paper'; future.source = { ...future.source, id: 'future', url: 'https://arxiv.org/abs/2607.99998' }; future.publishedAt = '2026-07-21T16:00:01.000Z';
   const withFuture = selectDaily([...fixtureCandidates, future], { date: '2026-07-19', history: [] });
   assert.ok(withFuture.rejected.some(x => x.id === future.id && x.reason === 'future-dated'));
+  assert.throws(() => selectDaily(fixtureCandidates, { date: '2026-02-30', history: [] }), /invalid selection date/);
+});
+
+test('timezone and model URL configuration are validated before runtime use', async () => {
+  await assert.rejects(() => loadConfig({ env: { DESIGNSIGNAL_TIMEZONE: 'Not/A_Timezone' } }), /invalid timezone/);
+  await assert.rejects(() => loadConfig({ env: { OPENAI_BASE_URL: 'https://models.example/v1?api_key=secret-marker' } }), error => error.message === 'invalid model base URL' && !error.message.includes('secret-marker'));
 });
 
 test('OpenAlex work language overrides Chinese institution locale and auth stays request-only', async () => {

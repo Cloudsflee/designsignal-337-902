@@ -63,21 +63,19 @@ test('Compose leaves OpenAI selection unset and passes optional source settings 
   assert.doesNotMatch(compose, /api\.openai\.com|sk-[A-Za-z0-9_-]+|OPENAI_(?:BASE_URL|MODEL|API_KEY):[ \t]+\S/);
 });
 
-test('Compose passes Feishu document configuration only to the scheduler', () => {
-  for (const name of ['FEISHU_APP_ID', 'FEISHU_APP_SECRET', 'FEISHU_DOC_FOLDER_TOKEN']) {
+test('Compose passes all delivery configuration only to the scheduler', () => {
+  for (const name of ['DESIGNSIGNAL_WEBHOOK_URL', 'FEISHU_WEBHOOK_URL', 'WECOM_WEBHOOK_URL', 'FEISHU_APP_ID', 'FEISHU_APP_SECRET', 'FEISHU_DOC_FOLDER_TOKEN']) {
     assert.match(scheduler, new RegExp(`^      ${name}:$`, 'm'));
     assert.doesNotMatch(dashboard, new RegExp(name));
   }
   assert.match(scheduler, /^      FEISHU_TENANT_BASE_URL: \$\{FEISHU_TENANT_BASE_URL:-https:\/\/feishu\.cn\}$/m);
   assert.doesNotMatch(dashboard, /FEISHU_TENANT_BASE_URL/);
-  assert.doesNotMatch(compose, /FEISHU_WEBHOOK_URL|DESIGNSIGNAL_WEBHOOK_URL|WECOM_WEBHOOK_URL/);
 });
 
-test('GitHub Actions passes the four Feishu document settings without stale webhooks', () => {
+test('GitHub Actions passes document and webhook delivery settings', () => {
   assert.match(workflow, /^\s+- cron: "50 15 \* \* \*"$/m);
-  for (const name of ['FEISHU_APP_ID', 'FEISHU_APP_SECRET', 'FEISHU_DOC_FOLDER_TOKEN', 'FEISHU_TENANT_BASE_URL']) assert.match(workflow, new RegExp(`^          ${name}:`, 'm'));
+  for (const name of ['DESIGNSIGNAL_WEBHOOK_URL', 'FEISHU_WEBHOOK_URL', 'WECOM_WEBHOOK_URL', 'FEISHU_APP_ID', 'FEISHU_APP_SECRET', 'FEISHU_DOC_FOLDER_TOKEN', 'FEISHU_TENANT_BASE_URL']) assert.match(workflow, new RegExp(`^          ${name}:`, 'm'));
   assert.match(workflow, /FEISHU_TENANT_BASE_URL:[^\n]*https:\/\/feishu\.cn/);
-  assert.doesNotMatch(workflow, /FEISHU_WEBHOOK_URL|DESIGNSIGNAL_WEBHOOK_URL|WECOM_WEBHOOK_URL/);
 });
 
 test('Compose fixes identities, shares one image and data volume, and publishes locally', () => {

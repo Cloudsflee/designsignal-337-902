@@ -1,3 +1,5 @@
+import { isIsoDate } from './util.mjs';
+
 const quota = { paper: 2, product: 1, ui: 1, frontier: 2 };
 const day = 864e5;
 const defaultPriorityInstitutionPaper = { institutionIds: ['I99065089', 'I76130692', 'I116953780'], freshnessDays: 7, maxScoreGap: 5 };
@@ -61,6 +63,7 @@ const fallbackReason = (audit, priorityRejected) => {
 };
 
 export function selectDaily(candidates, { date, history = [], maxAgeDays = 60, priorityInstitutionPaper = defaultPriorityInstitutionPaper } = {}) {
+  if (!isIsoDate(date)) throw new Error('invalid selection date');
   const now = new Date(`${date}T23:59:59+08:00`).getTime();
   if (!Number.isFinite(now)) throw new Error('invalid selection date');
   if (!Array.isArray(priorityInstitutionPaper.institutionIds) || priorityInstitutionPaper.institutionIds.length < 1 || priorityInstitutionPaper.institutionIds.length > 20 || new Set(priorityInstitutionPaper.institutionIds).size !== priorityInstitutionPaper.institutionIds.length || priorityInstitutionPaper.institutionIds.some(id => !/^I\d+$/.test(id))) throw new Error('invalid priority institution IDs');
